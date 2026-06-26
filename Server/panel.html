@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shadow President</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Source+Code+Pro:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ── Reset & base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:        #12100d;
+  --bg2:       #1c1914;
+  --bg3:       #221e18;
+  --border:    #2e2820;
+  --border2:   #3e3428;
+  --gold:      #c8a96e;
+  --gold-dim:  #7a6040;
+  --gold-pale: #e8d090;
+  --text:      #d8d0be;
+  --text-dim:  #7a7060;
+  --text-mute: #3e3830;
+  --teal:      #5a9a7a;
+  --blue:      #6aaed4;
+  --purple:    #9880c0;
+  --red:       #c05050;
+  --r:         5px;
+}
+html { font-size: 18px; }
+body {
+  font-family: 'Libre Baskerville', Georgia, serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 0 0 40px;
+}
+a { color: var(--gold); }
+button { cursor: pointer; font-family: inherit; }
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+/* ── Masthead ─────────────────────────────────────────────────────────────── */
+#masthead {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 20px 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+#masthead h1 {
+  font-family: 'Cinzel', serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+#status  { font-size: 11px; color: var(--text-dim); flex: 1; }
+.dot     { color: var(--text-mute); transition: color 0.3s; }
+#turn-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 12px;
+  margin-right: 8px;
+  border: 1px solid rgba(200,169,110,0.35);
+  border-radius: 4px;
+  background: rgba(200,169,110,0.06);
+  white-space: nowrap;
+}
+#turn-chip .tc-label {
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--gold);
+  opacity: 0.8;
+}
+#turn-chip .tc-num {
+  font-family: 'Cinzel', serif;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--gold-pale);
+}
+#turn-chip .tc-step { font-size: 10px; color: var(--text-dim); }
+#mast-btns { display: flex; gap: 6px; }
+.mast-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--text-dim);
+  padding: 3px 9px;
+  border-radius: var(--r);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+.mast-btn:hover { border-color: var(--gold-dim); color: var(--gold); }
+.mast-btn.danger:hover { border-color: #800; color: #e05050; background: #1e0808; }
+
+/* ── Stats bar ────────────────────────────────────────────────────────────── */
+#stats-bar {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 20px;
+  font-size: 13px;
+  color: var(--text-dim);
+  min-height: 26px;
+  line-height: 1.4;
+}
+.sv { color: var(--text); font-weight: 700; }
+.stat-sep { color: var(--text-mute); padding: 0 8px; }
+
+/* ── Layout: body columns ─────────────────────────────────────────────────── */
+#layout {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 0;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+@media (max-width: 950px) { #layout { grid-template-columns: 1fr; } }
+
+/* ── Left: transcript ─────────────────────────────────────────────────────── */
+#transcript-col {
+  padding: 16px 20px 0 0;
+  border-right: 1px solid var(--border);
+}
+.section-label {
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--gold-dim);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.ctx-count { color: var(--text-mute); font-size: 9px; letter-spacing: 0; text-transform: none; }
+
+#context-scroll {
+  height: calc(100vh - 180px);
+  min-height: 300px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+#context-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-bottom: 20px;
+}
+
+/* Transcript line types */
+.ctx-line { padding: 4px 0; line-height: 1.65; font-size: 15px; }
+.ctx-line .spk {
+  font-family: 'Cinzel', serif;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 1px;
+}
+
+.ctx-npc   .spk { color: var(--text-dim); }
+.ctx-npc   .body { color: var(--text); }
+
+.ctx-anton .spk { color: var(--blue); }
+.ctx-anton .body { color: #b8d8e8; }
+
+.ctx-narrator .spk { color: var(--purple); }
+.ctx-narrator .body { color: #c0b0d8; font-style: italic; }
+
+.ctx-label .spk { color: var(--teal); }
+.ctx-label .body { color: var(--text-dim); font-style: italic; font-size: 12px; }
+
+/* Scene break — divider between conversations */
+.ctx-scene-break {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 4px;
+}
+.ctx-scene-break .sb-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to var(--dir, right), transparent, rgba(200,169,110,0.45));
+}
+.ctx-scene-break .sb-rule:last-child { --dir: left; }
+.ctx-scene-break .sb-orn {
+  color: var(--gold);
+  font-size: 12px;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+/* Dialogue choice (spoken response) */
+.ctx-choice {
+  margin: 4px 0;
+  padding: 6px 10px;
+  background: rgba(200,169,110,0.07);
+  border-left: 2px solid var(--gold);
+  border-radius: 0 var(--r) var(--r) 0;
+}
+.ctx-choice .spk { color: var(--gold); }
+.ctx-choice .body { color: var(--gold-pale); }
+
+/* Decision block — label header */
+.ctx-decision-label {
+  margin: 6px 0 0;
+  padding: 5px 10px;
+  background: rgba(90,154,122,0.08);
+  border-left: 2px solid var(--teal);
+  border-radius: 0 var(--r) 0 0;
+}
+.ctx-decision-label .dec-type {
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--teal);
+  display: block;
+  margin-bottom: 1px;
+}
+.ctx-decision-label .body { color: var(--text-dim); font-size: 12.5px; }
+
+/* Decision block — choice result (pairs with label above) */
+.ctx-decision-choice {
+  margin: 0 0 6px;
+  padding: 5px 10px 6px;
+  background: rgba(90,154,122,0.05);
+  border-left: 2px solid var(--teal);
+  border-top: 1px solid rgba(90,154,122,0.2);
+  border-radius: 0 0 var(--r) 0;
+}
+.ctx-decision-choice .dec-badge {
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--teal);
+  display: inline-block;
+  margin-right: 6px;
+}
+.ctx-decision-choice .body { color: #a0d8b8; font-weight: 700; font-size: 13px; }
+
+/* Auto-selected (forced single option, no real decision) — muted, low-importance */
+.ctx-auto:not(.ctx-decision-choice) {
+  margin: 3px 0;
+  padding: 4px 10px;
+  background: rgba(180,180,180,0.035);
+  border-left: 2px solid rgba(200,169,110,0.3);
+  border-radius: 0 var(--r) var(--r) 0;
+}
+.ctx-auto:not(.ctx-decision-choice) .spk {
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+.ctx-auto:not(.ctx-decision-choice) .body { color: var(--gold-pale); font-weight: 400; opacity: 0.85; }
+/* Decision card that was auto-selected (single-button panel) — dimmed teal card */
+.ctx-decision-choice.ctx-auto { opacity: 0.7; }
+.ctx-decision-choice.ctx-auto .body { font-weight: 400; }
+
+.ctx-choice.newly-chosen, .ctx-decision-choice.newly-chosen {
+  animation: choiceFlash 1.8s ease-out forwards;
+}
+@keyframes choiceFlash {
+  0%   { background: rgba(200,169,110,0.35); }
+  100% { background: rgba(200,169,110,0.07); }
+}
+@keyframes decisionFlash {
+  0%   { background: rgba(90,154,122,0.3); }
+  100% { background: rgba(90,154,122,0.05); }
+}
+.ctx-decision-choice.newly-chosen {
+  animation: decisionFlash 1.8s ease-out forwards;
+}
+
+/* Speaker separator dots (between different speaker groups) */
+.ctx-sep {
+  text-align: center;
+  color: var(--text-mute);
+  font-size: 10px;
+  padding: 2px 0;
+  letter-spacing: 4px;
+}
+
+/* ── Right sidebar ────────────────────────────────────────────────────────── */
+#sidebar {
+  padding: 16px 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Sidebar cards ────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 10px 12px;
+}
+.card-title {
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold-dim);
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Collapsible card header */
+.card-title-btn {
+  background: none; border: none; padding: 0;
+  font-family: 'Cinzel', serif; font-size: 9px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--gold-dim);
+  display: flex; justify-content: space-between; align-items: center;
+  width: 100%; cursor: pointer; transition: color 0.15s;
+}
+.card-title-btn:hover { color: var(--gold); }
+.card-title-btn .ct-arrow { font-size: 10px; opacity: 0.55; transition: transform 0.2s; }
+.card-title-btn.open .ct-arrow { transform: rotate(90deg); }
+.card-collapse { overflow: hidden; }
+.card-collapse.collapsed { display: none; }
+
+/* News */
+#news-list { font-size: 12px; line-height: 1.6; }
+.news-entry { padding: 3px 0; border-bottom: 1px solid var(--border); }
+.news-entry:last-child { border-bottom: none; }
+.news-entry.expandable { cursor: pointer; }
+.news-entry.expandable:hover .news-title { color: var(--gold-pale); opacity: 0.85; }
+.news-paper { font-size: 10px; color: var(--gold-dim); font-family: 'Cinzel', serif;
+              letter-spacing: 0.08em; display: block; margin-bottom: 1px; }
+.news-title { color: var(--gold-pale); }
+.news-desc  { color: var(--text-dim); font-size: 11.5px; display: none; margin-top: 2px; }
+.news-entry.open .news-desc { display: block; }
+
+/* Reports */
+#reports-list { font-size: 12px; line-height: 1.6; }
+.report-entry { padding: 4px 0 4px 8px; border-left: 2px solid var(--teal);
+                border-bottom: 1px solid var(--border); margin-bottom: 2px; }
+.report-entry:last-child { border-bottom: none; margin-bottom: 0; }
+.report-entry.expandable { cursor: pointer; }
+.report-title { color: #a0d0b8; display: block; font-size: 11.5px; }
+.report-desc  { color: var(--text-dim); font-size: 11px; font-style: italic; display: none; margin-top: 2px; }
+.report-entry.open .report-desc { display: block; }
+
+/* Codex cards */
+#codex-cards { display: flex; flex-direction: column; gap: 4px; min-height: 18px; }
+.codex-card {
+  background: #1a1624;
+  border: 1px solid #302848;
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.codex-card-header {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: #9880c0;
+  font-family: 'Libre Baskerville', serif;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.12s, color 0.12s;
+  user-select: none;
+}
+.codex-card-header:hover { background: #201e34; color: #b8a0e0; }
+.codex-card.open .codex-card-header { color: #d0b8f8; border-bottom: 1px solid #302848; }
+.codex-card-arrow { font-size: 10px; opacity: 0.55; flex-shrink: 0; }
+.codex-card-body {
+  padding: 6px 10px 8px;
+  font-size: 11.5px;
+  color: #b8a8d0;
+  line-height: 1.6;
+  background: #161422;
+  font-style: italic;
+  display: none;
+  white-space: pre-wrap;
+}
+
+/* Token bar */
+.stack-track { height: 10px; border-radius: 3px; overflow: hidden; display: flex; background: var(--bg); }
+.stack-seg   { height: 100%; transition: width 0.5s ease; flex-shrink: 0; }
+.seg-sysprompt { background: var(--gold); }
+.seg-memory    { background: #9b59b6; }
+.seg-context   { background: var(--teal); }
+.seg-codex     { background: #4a82b8; }
+.seg-news      { background: #c77d4a; }
+.seg-reports   { background: #7d9a5a; }
+.seg-overhead  { background: #585858; }
+.seg-reserved  { background: #2e2e2e; }
+.stack-legend  { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-bottom: 6px; }
+.legend-item   { font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 3px; }
+.swatch        { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; display: inline-block; }
+.stack-info    { font-size: 10px; color: var(--text-mute); margin-top: 5px; text-align: right; }
+
+/* Reasoning log */
+#decisions-scroll { max-height: 280px; overflow-y: auto; }
+.dec-entry  { border-bottom: 1px solid var(--border); padding: 6px 0; }
+.dec-entry:last-child { border-bottom: none; }
+.dec-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+.dec-type   { font-family: 'Cinzel', serif; font-size: 9px; letter-spacing: 0.1em;
+              text-transform: uppercase; color: var(--gold); }
+.dec-meta   { font-size: 9.5px; color: var(--text-mute); font-family: 'Source Code Pro', monospace; }
+.dec-choices { font-size: 11px; color: var(--text-mute); line-height: 1.5; }
+.dec-chosen  { color: var(--gold); }
+.dec-reasoning { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; margin-top: 3px;
+                 font-style: italic; }
+
+/* Activity & Memory row */
+#lower-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+             max-width: 1400px; margin: 12px auto 0; padding: 0 16px; }
+@media (max-width: 700px) { #lower-row { grid-template-columns: 1fr; } }
+
+#activity-scroll { max-height: 180px; overflow-y: auto; padding-bottom: 4px; }
+.act-entry { display: flex; gap: 6px; align-items: baseline; padding: 2px 0;
+             border-bottom: 1px solid var(--border); font-size: 11px; }
+.act-entry:last-child { border-bottom: none; }
+.act-time  { color: var(--text-mute); font-size: 10px; width: 44px; flex-shrink: 0;
+             font-family: 'Source Code Pro', monospace; }
+.act-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em;
+             padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
+             font-family: 'Source Code Pro', monospace; }
+.act-desc  { color: var(--text-dim); }
+.badge-decision   { background: #102018; color: #5a9; }
+.badge-checkpoint { background: #201800; color: var(--gold); }
+.badge-memory     { background: #101020; color: #889; }
+.badge-compact    { background: #201000; color: #c87; }
+.badge-codex      { background: #180e28; color: #9a8; }
+
+/* Memory journal */
+#memory-scroll {
+  max-height: 180px;
+  overflow-y: auto;
+  background: #1a160e;
+  border: 1px solid #2e2418;
+  border-radius: var(--r);
+  padding: 8px 10px;
+  margin-top: 4px;
+}
+.mem-entry {
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid #3e2e18;
+  margin-bottom: 5px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #c0b090;
+  font-family: 'Libre Baskerville', serif;
+}
+.mem-entry:last-child { margin-bottom: 0; }
+.mem-entry.mem-summary {
+  border-left-color: #3e2858;
+  color: #a898c8;
+  opacity: 0.85;
+}
+.mem-turn {
+  display: block;
+  font-style: normal;
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--gold-dim);
+  margin-bottom: 2px;
+}
+.mem-summary-badge {
+  color: var(--purple);
+}
+.clear-btn { background: none; border: 1px solid var(--border2); color: var(--text-mute);
+             padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+.clear-btn:hover { border-color: #600; color: #c05050; }
+
+/* Ask section */
+#ask-row { max-width: 1400px; margin: 12px auto 0; padding: 0 16px; }
+.ask-toggle {
+  background: none; border: none; color: var(--text-mute);
+  font-family: 'Cinzel', serif; font-size: 9px; letter-spacing: 0.12em;
+  text-transform: uppercase; padding: 0;
+  transition: color 0.15s;
+}
+.ask-toggle:hover { color: var(--text-dim); }
+#ask-body { display: none; margin-top: 8px; }
+textarea {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border2);
+  color: var(--text); padding: 6px 8px; font-family: 'Libre Baskerville', serif;
+  font-size: 12px; border-radius: var(--r); resize: vertical; outline: none;
+}
+textarea:focus { border-color: var(--gold-dim); }
+.ask-btn {
+  margin-top: 6px; background: var(--gold); color: #111; border: none;
+  padding: 5px 14px; border-radius: var(--r); font-weight: 700;
+  font-family: 'Cinzel', serif; font-size: 11px; letter-spacing: 0.05em;
+  transition: background 0.15s;
+}
+.ask-btn:hover    { background: var(--gold-pale); }
+.ask-btn:disabled { background: var(--border2); color: var(--text-mute); }
+#ask-tokens { color: var(--text-mute); font-size: 10px; margin-top: 4px;
+              font-family: 'Source Code Pro', monospace; }
+#answer { margin-top: 8px; white-space: pre-wrap; font-size: 12.5px; line-height: 1.65;
+          color: var(--text-dim); max-height: 240px; overflow-y: auto; }
+.err { color: var(--red); }
+
+/* Modal */
+#prompt-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.92);
+                z-index:200; overflow:auto; padding:20px; }
+#prompt-modal-inner { max-width:980px; margin:0 auto; background:var(--bg2);
+                      border:1px solid var(--border2); border-radius:var(--r); padding:20px; }
+.prompt-section { margin-bottom:16px; }
+.prompt-role { font-family:'Cinzel',serif; font-size:9px; letter-spacing:0.12em;
+               text-transform:uppercase; color:var(--gold-dim); margin-bottom:5px; }
+.prompt-body { white-space:pre-wrap; font-size:11.5px; line-height:1.5; color:var(--text-dim);
+               background:var(--bg); padding:10px; border-radius:var(--r);
+               border:1px solid var(--border); max-height:52vh; overflow-y:auto;
+               font-family:'Source Code Pro',monospace; }
+.prompt-meta { font-size:10.5px; color:var(--text-mute); margin-bottom:12px;
+               font-family:'Source Code Pro',monospace; }
+.modal-btn { background:var(--bg3); border:1px solid var(--border2); color:var(--text-dim);
+             padding:4px 12px; border-radius:var(--r); font-size:11px; }
+.modal-btn:hover { border-color:var(--gold-dim); color:var(--gold); }
+#prompt-copy-btn { float:right; }
+.modal-close { margin-top:8px; }
+
+/* Dim placeholder */
+.ph { color: var(--text-mute); font-size: 12px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<!-- Raw prompt modal -->
+<div id="prompt-modal" onclick="if(event.target===this)this.style.display='none'">
+  <div id="prompt-modal-inner">
+    <button class="modal-btn" id="prompt-copy-btn" onclick="copyPrompt()">Copy all</button>
+    <h2 style="font-family:'Cinzel',serif;font-size:13px;color:var(--gold);margin:0 0 8px">Last prompt — LM Studio</h2>
+    <div class="prompt-meta" id="prompt-meta"></div>
+    <div id="prompt-sections"></div>
+    <button class="modal-btn modal-close" onclick="document.getElementById('prompt-modal').style.display='none'">Close</button>
+  </div>
+</div>
+
+<!-- Masthead -->
+<div id="masthead">
+  <h1>Shadow President <span class="dot" id="dot">●</span></h1>
+  <div id="status">Connecting…</div>
+  <div id="turn-chip" title="">
+    <span class="tc-label">Turn</span>
+    <span class="tc-num" id="turn-num">—</span>
+    <span class="tc-step" id="turn-step"></span>
+  </div>
+  <div id="mast-btns">
+    <button class="mast-btn" onclick="showLastPrompt()">Last prompt</button>
+    <button class="mast-btn danger" onclick="quitServer()">Quit</button>
+  </div>
+</div>
+
+<!-- Stats -->
+<div id="stats-bar"><span class="ph">No stats yet</span></div>
+
+<!-- Main layout -->
+<div id="layout">
+
+  <!-- Left: transcript -->
+  <div id="transcript-col">
+    <div class="section-label">
+      Dialogue transcript
+      <span class="ctx-count" id="line-count"></span>
+    </div>
+    <div id="context-scroll">
+      <div id="context-lines"><span class="ph">Loading…</span></div>
+    </div>
+  </div>
+
+  <!-- Right sidebar -->
+  <div id="sidebar">
+
+    <!-- Press -->
+    <div class="card">
+      <div class="card-title">Press</div>
+      <div id="news-list"><span class="ph">No articles yet</span></div>
+    </div>
+
+    <!-- Reports -->
+    <div class="card">
+      <div class="card-title">Reports</div>
+      <div id="reports-list"><span class="ph">No reports yet</span></div>
+    </div>
+
+    <!-- Codex injection -->
+    <div class="card">
+      <div class="card-title">Codex</div>
+      <div id="codex-cards"><span class="ph">None injected</span></div>
+    </div>
+
+    <!-- Token budget -->
+    <div class="card">
+      <div class="card-title">Token budget</div>
+      <div class="stack-legend">
+        <span class="legend-item"><span class="swatch seg-sysprompt"></span>System <span id="l-sys">—</span></span>
+        <span class="legend-item"><span class="swatch seg-memory"></span>Memory <span id="l-mem">—</span></span>
+        <span class="legend-item"><span class="swatch seg-context"></span>Context <span id="l-ctx">—</span></span>
+        <span class="legend-item"><span class="swatch seg-codex"></span>Codex <span id="l-codex">—</span></span>
+        <span class="legend-item"><span class="swatch seg-news"></span>Press <span id="l-news">—</span></span>
+        <span class="legend-item"><span class="swatch seg-reports"></span>Reports <span id="l-reports">—</span></span>
+        <span class="legend-item"><span class="swatch seg-overhead"></span>Overhead <span id="l-oh">—</span></span>
+        <span class="legend-item"><span class="swatch seg-reserved"></span>Reserved <span id="l-res">—</span></span>
+      </div>
+      <div class="stack-track">
+        <div class="stack-seg seg-sysprompt" id="seg-sys"     style="width:0%"></div>
+        <div class="stack-seg seg-memory"    id="seg-mem"     style="width:0%"></div>
+        <div class="stack-seg seg-context"   id="seg-ctx"     style="width:0%"></div>
+        <div class="stack-seg seg-codex"     id="seg-codex"   style="width:0%"></div>
+        <div class="stack-seg seg-news"      id="seg-news"    style="width:0%"></div>
+        <div class="stack-seg seg-reports"   id="seg-reports" style="width:0%"></div>
+        <div class="stack-seg seg-overhead"  id="seg-oh"      style="width:0%"></div>
+        <div class="stack-seg seg-reserved"  id="seg-res"     style="width:0%"></div>
+      </div>
+      <div class="stack-info">
+        Window <span id="s-win">—</span> &nbsp;·&nbsp;
+        Last prompt <span id="s-prompt">—</span> &nbsp;·&nbsp;
+        Completion <span id="s-comp">—</span>
+      </div>
+    </div>
+
+    <!-- Reasoning log -->
+    <div class="card">
+      <div class="card-title">
+        Reasoning log
+        <span class="ph" id="dec-count" style="font-size:10px;font-style:normal"></span>
+      </div>
+      <div id="decisions-scroll"><span class="ph">No decisions yet</span></div>
+    </div>
+
+  </div><!-- /sidebar -->
+</div><!-- /layout -->
+
+<!-- Activity + Memory -->
+<div id="lower-row">
+  <div class="card">
+    <div class="card-title">Activity</div>
+    <div id="activity-scroll"><span class="ph">No activity yet</span></div>
+  </div>
+  <div class="card">
+    <div class="card-title">
+      Journal
+      <span>
+        <span class="ph" id="mem-count" style="font-size:10px;font-style:normal"></span>
+        <button class="clear-btn" onclick="clearMemory()">Clear</button>
+      </span>
+    </div>
+    <div id="memory-scroll"><span class="ph" style="font-size:11px;font-style:italic">No entries yet</span></div>
+  </div>
+</div>
+
+<!-- Ask the AI -->
+<div id="ask-row">
+  <div class="card">
+    <button class="ask-toggle" onclick="toggleAsk(this)">&#9656; Ask the AI</button>
+    <div id="ask-body">
+      <textarea id="q" rows="2" placeholder="Who is Franc Ergent? What should I prioritise?"></textarea>
+      <button class="ask-btn" id="btn" onclick="ask()">Ask (Ctrl+Enter)</button>
+      <div id="ask-tokens"></div>
+      <div id="answer"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TYPE_LABELS = {
+  dialogue:'Dialogue', bill:'Bill', decision_panel:'Event',
+  paged_decision:'Policy', decree:'Decree'
+};
+function fmt(n) { return n >= 1000 ? (n/1000).toFixed(1)+'k' : String(n); }
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Collapsible cards ─────────────────────────────────────────────────────────
+function toggleCard(collapseId, btn) {
+  const el   = document.getElementById(collapseId);
+  const open = !el.classList.contains('collapsed');
+  el.classList.toggle('collapsed', open);
+  btn.classList.toggle('open', !open);
+}
+
+// ── Context rendering ─────────────────────────────────────────────────────────
+const LABEL_SPEAKERS = new Set([
+  'event','narrator','bill for decision','policy decision',
+  'decree panel','one-time decree panel','[choice]'
+]);
+
+// Maps label speaker → human-readable decision type badge
+const DECISION_TYPE = {
+  'event':                 'Event',
+  'bill for decision':     'Bill',
+  'policy decision':       'Policy',
+  'one-time decree panel': 'Decree',
+  'decree panel':          'Decree',
+};
+
+let _prevContextLen = 0;
+
+function speakerOf(raw) {
+  if (!raw) return '';
+  const ci = raw.indexOf(': ');
+  return ci === -1 ? '' : raw.slice(0, ci).trim().toLowerCase();
+}
+
+function makeLineEl(raw, prevSpeakerLow) {
+  const el = document.createElement('div');
+  el.className = 'ctx-line';
+
+  if (raw === '\x1e') {
+    el.className = 'ctx-scene-break';
+    el.innerHTML = '<span class="sb-rule"></span><span class="sb-orn">&#10070;</span><span class="sb-rule"></span>';
+    return el;
+  }
+
+  if (!raw || !raw.trim()) { el.style.height = '4px'; return el; }
+
+  const ci = raw.indexOf(': ');
+  if (ci === -1) {
+    el.classList.add('ctx-npc');
+    el.innerHTML = `<span class="body">${esc(raw)}</span>`;
+    return el;
+  }
+
+  let speaker = raw.slice(0, ci).trim();
+  let body    = esc(raw.slice(ci + 2));
+  // Speakers may carry an "_Italic" suffix (e.g. "Player_Italic") — strip it for
+  // display and render the line's body in italics instead.
+  if (speaker.toLowerCase().endsWith('_italic')) {
+    speaker = speaker.slice(0, -'_italic'.length);
+    body    = `<em>${body}</em>`;
+  }
+  const spkLow  = speaker.toLowerCase();
+
+  if (spkLow === '[choice]') {
+    const decisionType = prevSpeakerLow && DECISION_TYPE[prevSpeakerLow];
+    if (decisionType) {
+      el.classList.add('ctx-decision-choice');
+      el.innerHTML = `<span class="spk dec-badge">${decisionType}</span><span class="body">${body}</span>`;
+    } else {
+      el.classList.add('ctx-choice');
+      el.innerHTML = `<span class="spk">Your choice</span><span class="body">${body}</span>`;
+    }
+    return el;
+  }
+  if (spkLow === '[auto]') {
+    // Forced single option — no real decision was made. Distinct, muted styling.
+    const decisionType = prevSpeakerLow && DECISION_TYPE[prevSpeakerLow];
+    if (decisionType) {
+      el.classList.add('ctx-decision-choice', 'ctx-auto');
+      el.innerHTML = `<span class="spk dec-badge">${decisionType} · auto</span><span class="body">${body}</span>`;
+    } else {
+      el.classList.add('ctx-auto');
+      el.innerHTML = `<span class="spk">Auto</span><span class="body">${body}</span>`;
+    }
+    return el;
+  }
+  if (spkLow === 'narrator') {
+    el.classList.add('ctx-narrator');
+    el.innerHTML = `<span class="spk">Narrator</span><span class="body">${body}</span>`;
+    return el;
+  }
+  if (spkLow === 'player' || spkLow === 'you') {
+    el.classList.add('ctx-anton');
+    el.innerHTML = `<span class="spk">Player</span><span class="body">${body}</span>`;
+    return el;
+  }
+  if (DECISION_TYPE[spkLow]) {
+    el.classList.add('ctx-decision-label');
+    el.innerHTML = `<span class="dec-type">${DECISION_TYPE[spkLow]}</span><span class="body">${body}</span>`;
+    return el;
+  }
+  if (LABEL_SPEAKERS.has(spkLow) || speaker.startsWith('[')) {
+    el.classList.add('ctx-label');
+    el.innerHTML = `<span class="spk">${esc(speaker)}</span><span class="body">${body}</span>`;
+    return el;
+  }
+  el.classList.add('ctx-npc');
+  el.innerHTML = `<span class="spk">${esc(speaker)}</span><span class="body">${body}</span>`;
+  return el;
+}
+
+function renderContext(lines) {
+  const container = document.getElementById('context-lines');
+  const scroll    = document.getElementById('context-scroll');
+  const atBottom  = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
+  const newCount  = lines.length;
+
+  container.innerHTML = '';
+  if (!lines.length) {
+    container.innerHTML = '<span class="ph">No context yet</span>';
+    _prevContextLen = 0;
+    return;
+  }
+
+  const newLineStart = _prevContextLen > 0 ? Math.max(0, lines.length - (newCount - _prevContextLen)) : lines.length;
+  let prevSpk = '';
+  lines.forEach((raw, i) => {
+    if (raw === '\x1e') {
+      container.appendChild(makeLineEl(raw, ''));
+      prevSpk = '';   // next conversation starts fresh
+      return;
+    }
+    const el = makeLineEl(raw, prevSpk);
+    prevSpk = speakerOf(raw);
+    if (i >= newLineStart && (el.classList.contains('ctx-choice') || el.classList.contains('ctx-decision-choice'))) {
+      el.classList.add('newly-chosen');
+    }
+    container.appendChild(el);
+  });
+
+  _prevContextLen = newCount;
+  if (atBottom) scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' });
+}
+
+// ── Codex cards ───────────────────────────────────────────────────────────────
+let _openCodexTitles = new Set();
+let _codexSummaries  = {};
+
+function toggleCodexCard(titleKey) {
+  if (_openCodexTitles.has(titleKey)) {
+    _openCodexTitles.delete(titleKey);
+  } else {
+    _openCodexTitles.add(titleKey);
+  }
+  const open = _openCodexTitles.has(titleKey);
+  const card = document.querySelector(`.codex-card[data-title="${CSS.escape(titleKey)}"]`);
+  if (card) {
+    card.classList.toggle('open', open);
+    const body  = card.querySelector('.codex-card-body');
+    const arrow = card.querySelector('.codex-card-arrow');
+    if (body)  body.style.display  = open ? 'block' : 'none';
+    if (arrow) arrow.textContent   = open ? '▾' : '▸';
+  }
+}
+
+// ── Expandable entry state (Press / Reports) ─────────────────────────────────
+// Persist open/closed state across refreshes — the lists rebuild innerHTML each
+// tick, so toggling a class on the DOM element alone would be wiped every refresh.
+let _openNewsKeys   = new Set();
+let _openReportKeys = new Set();
+
+function toggleNewsEntry(el) {
+  const key = el.dataset.key;
+  if (_openNewsKeys.has(key)) { _openNewsKeys.delete(key); } else { _openNewsKeys.add(key); }
+  el.classList.toggle('open', _openNewsKeys.has(key));
+}
+
+function toggleReportEntry(el) {
+  const key = el.dataset.key;
+  if (_openReportKeys.has(key)) { _openReportKeys.delete(key); } else { _openReportKeys.add(key); }
+  el.classList.toggle('open', _openReportKeys.has(key));
+}
+
+// ── News ──────────────────────────────────────────────────────────────────────
+function formatPaperName(raw) {
+  const name = raw.includes('_') ? raw.slice(raw.indexOf('_') + 1) : raw;
+  return name.replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
+function renderNews(newsStr) {
+  const el = document.getElementById('news-list');
+  if (!newsStr || !newsStr.trim()) {
+    el.innerHTML = '<span class="ph">No articles this turn</span>';
+    return;
+  }
+  
+  const lines = newsStr.split('\n').filter(l => l.trim());
+  const entries = [];
+  let current = null;
+  
+  lines.forEach(line => {
+    // Look for the [Paper Name] Title format to anchor a new article
+    const pm = line.match(/^\[([^\]]+)\]\s*(.*)/);
+    
+    if (pm) {
+      if (current) entries.push(current);
+      
+      let content = pm[2];
+      let desc = '';
+      
+      // Handle the case where the description is on the same line separated by " — "
+      const dash = content.indexOf(' — ');
+      if (dash !== -1) {
+        desc = content.slice(dash + 3).trim();
+        content = content.slice(0, dash).trim();
+      }
+      
+      current = {
+        paper: pm[1],
+        title: content.replace(/^\s*["“”](.*)["“”]\s*$/, '$1'),
+        desc: desc
+      };
+    } else {
+      // If it doesn't start with [Paper], it's a body line continuation
+      if (current) {
+        current.desc = current.desc ? current.desc + ' ' + line : line;
+      } else {
+        // Failsafe: No active article, so we create a generic one
+        const dash = line.indexOf(' — ');
+        if (dash !== -1) {
+          current = { paper: '', title: line.slice(0, dash).trim(), desc: line.slice(dash + 3).trim() };
+        } else {
+          current = { paper: '', title: line, desc: '' };
+        }
+      }
+    }
+  });
+  if (current) entries.push(current);
+
+  el.innerHTML = entries.map(e => {
+    const paperHtml = e.paper ? `<span class="news-paper">${esc(formatPaperName(e.paper))}</span>` : '';
+    const titleText = e.paper ? `“${esc(e.title)}”` : esc(e.title);
+    
+    if (e.desc) {
+      const open = _openNewsKeys.has(e.title);
+      return `<div class="news-entry expandable${open?' open':''}" data-key="${esc(e.title)}" onclick="toggleNewsEntry(this)">${paperHtml}<span class="news-title">${titleText}</span><div class="news-desc">${esc(e.desc)}</div></div>`;
+    }
+    return `<div class="news-entry">${paperHtml}<span class="news-title">${titleText}</span></div>`;
+  }).join('');
+}
+
+function renderReports(reportsStr) {
+  const el = document.getElementById('reports-list');
+  if (!reportsStr || !reportsStr.trim()) {
+    el.innerHTML = '<span class="ph">No reports this turn</span>';
+    return;
+  }
+  
+  const entries = [];
+  
+  // Method 1: If the backend cleanly separated reports with blank lines (\n\n), use block parsing
+  if (reportsStr.includes('\n\n')) {
+    const blocks = reportsStr.split(/\n\s*\n/).filter(b => b.trim());
+    blocks.forEach(block => {
+      const lines = block.split('\n').filter(l => l.trim());
+      let title = lines[0];
+      let desc = lines.slice(1).join(' ');
+      
+      // The title line might still contain an inline dash
+      const dash = title.indexOf(' — ');
+      if (dash !== -1) {
+        const inlineDesc = title.slice(dash + 3).trim();
+        desc = inlineDesc + (desc ? ' ' + desc : '');
+        title = title.slice(0, dash).trim();
+      }
+      entries.push({ title, desc });
+    });
+  } else {
+    // Method 2: Stateful line-by-line grouping (if no blank lines were provided)
+    const lines = reportsStr.split('\n').filter(l => l.trim());
+    let current = null;
+    
+    lines.forEach(line => {
+      const dash = line.indexOf(' — ');
+      
+      if (dash !== -1) {
+        if (current) entries.push(current);
+        current = { title: line.slice(0, dash).trim(), desc: line.slice(dash + 3).trim() };
+      } else if (!current) {
+        current = { title: line, desc: '' };
+      } else if (!current.desc) {
+        // First line after a title becomes its description
+        current.desc = line;
+      } else {
+        // We already have a description. Is this a new title?
+        // Heuristic: Titles are usually short and don't end in typical sentence punctuation.
+        const isTitle = line.length < 60 && !/[.!?]$/.test(line.trim());
+        if (isTitle) {
+          entries.push(current);
+          current = { title: line, desc: '' };
+        } else {
+          current.desc += ' ' + line;
+        }
+      }
+    });
+    if (current) entries.push(current);
+  }
+
+  el.innerHTML = entries.map(e => {
+    if (e.desc) {
+      const open = _openReportKeys.has(e.title);
+      return `<div class="report-entry expandable${open?' open':''}" data-key="${esc(e.title)}" onclick="toggleReportEntry(this)"><span class="report-title">${esc(e.title)}</span><div class="report-desc">${esc(e.desc)}</div></div>`;
+    }
+    return `<div class="report-entry"><span class="report-title">${esc(e.title)}</span></div>`;
+  }).join('');
+}
+
+// ── Main refresh ──────────────────────────────────────────────────────────────
+async function refresh() {
+  try {
+    const d = await fetch('/context').then(r => r.json());
+    document.getElementById('status').textContent = `${d.model} · run ${d.run_id}`;
+    document.getElementById('line-count').textContent = `${d.lines} line${d.lines!==1?'s':''}`;
+
+    document.getElementById('turn-num').textContent = (d.turn != null ? d.turn : '—');
+    document.getElementById('turn-step').textContent = (d.step ? `· step ${d.step}` : '');
+    document.getElementById('turn-chip').title = d.fragment || '';
+
+    renderContext(d.context || []);
+    renderNews(d.news || '');
+    renderReports(d.reports || '');
+
+    // Stats
+    const statsEl = document.getElementById('stats-bar');
+    if (d.stats) {
+      statsEl.innerHTML = d.stats.split(' | ').reverse().map(s => {
+        const ci = s.indexOf(': ');
+        if (ci === -1) return esc(s);
+        return `${esc(s.slice(0,ci))}: <span class="sv">${esc(s.slice(ci+2))}</span>`;
+      }).join('<span class="stat-sep">·</span>');
+    } else {
+      statsEl.innerHTML = '<span class="ph">No stats yet</span>';
+    }
+
+    // Codex cards
+    const chips   = d.last_codex_injected || [];
+    const cardsEl = document.getElementById('codex-cards');
+    chips.forEach(e => { _codexSummaries[e.title] = e.summary || ''; });
+    if (chips.length) {
+      cardsEl.innerHTML = chips.map(e => {
+        const open = _openCodexTitles.has(e.title);
+        return `<div class="codex-card${open?' open':''}" data-title="${esc(e.title)}">
+          <div class="codex-card-header" onclick="toggleCodexCard(this.closest('.codex-card').dataset.title)">
+            ${esc(e.title)}<span class="codex-card-arrow">${open?'▾':'▸'}</span>
+          </div>
+          <div class="codex-card-body" style="display:${open?'block':'none'}">${esc(_codexSummaries[e.title] || '(no summary cached)')}</div>
+        </div>`;
+      }).join('');
+    } else {
+      cardsEl.innerHTML = '<span class="ph">None injected</span>';
+    }
+
+    // Token bar
+    const win   = d.context_window || 8192;
+    const sys   = d.est_sysprompt_tokens  || 0;
+    const mem   = d.est_memory_tokens     || 0;
+    const ctx   = d.est_context_tokens    || 0;
+    const codex = d.est_codex_tokens      || 0;
+    const news  = d.est_news_tokens       || 0;
+    const reps  = d.est_reports_tokens     || 0;
+    const oh    = d.est_overhead_tokens   || 0;
+    const res   = d.max_tokens            || 1024;
+    const lp    = d.last_prompt_tokens    || 0;
+    const lc    = d.last_completion_tokens || 0;
+    const sw = v => Math.max(0, Math.min(100, v/win*100)).toFixed(1)+'%';
+    document.getElementById('seg-sys').style.width     = sw(sys);
+    document.getElementById('seg-mem').style.width     = sw(mem);
+    document.getElementById('seg-ctx').style.width     = sw(ctx);
+    document.getElementById('seg-codex').style.width   = sw(codex);
+    document.getElementById('seg-news').style.width    = sw(news);
+    document.getElementById('seg-reports').style.width = sw(reps);
+    document.getElementById('seg-oh').style.width      = sw(oh);
+    document.getElementById('seg-res').style.width     = sw(res);
+    document.getElementById('l-sys').textContent     = fmt(sys);
+    document.getElementById('l-mem').textContent     = fmt(mem);
+    document.getElementById('l-ctx').textContent     = fmt(ctx);
+    document.getElementById('l-codex').textContent   = fmt(codex);
+    document.getElementById('l-news').textContent    = fmt(news);
+    document.getElementById('l-reports').textContent = fmt(reps);
+    document.getElementById('l-oh').textContent      = fmt(oh);
+    document.getElementById('l-res').textContent     = fmt(res);
+    document.getElementById('s-win').textContent    = fmt(win);
+    document.getElementById('s-prompt').textContent = fmt(lp);
+    document.getElementById('s-comp').textContent   = fmt(lc);
+
+    const dot = document.getElementById('dot');
+    dot.style.color = '#5a9a5a';
+    setTimeout(() => dot.style.color = 'var(--text-mute)', 500);
+  } catch { document.getElementById('status').textContent = 'Server unreachable'; }
+}
+
+async function refreshDecisions() {
+  try {
+    const d  = await fetch('/decisions').then(r => r.json());
+    const el = document.getElementById('decisions-scroll');
+    document.getElementById('dec-count').textContent =
+      `${d.decisions.length} entr${d.decisions.length!==1?'ies':'y'}`;
+    if (!d.decisions.length) { el.innerHTML = '<span class="ph">No decisions yet</span>'; return; }
+    const top = el.scrollTop;
+    el.innerHTML = d.decisions.map(dec => {
+      const ch = dec.choices.map(c => c.index === dec.choice_index
+        ? `<span class="dec-chosen">&#8594; ${c.index}. ${esc(c.text)}</span>`
+        : `<span>${c.index}. ${esc(c.text)}</span>`
+      ).join('<br>');
+      return `<div class="dec-entry">
+        <div class="dec-header">
+          <span class="dec-type">${TYPE_LABELS[dec.decision_type]||dec.decision_type}</span>
+          <span class="dec-meta">T${dec.turn} · ${dec.prompt_tokens}&#8594;${dec.completion_tokens}t</span>
+        </div>
+        <div class="dec-choices">${ch}</div>
+        ${dec.reasoning ? `<div class="dec-reasoning">&ldquo;${esc(dec.reasoning)}&rdquo;</div>` : ''}
+      </div>`;
+    }).join('');
+    el.scrollTop = top;
+  } catch {}
+}
+
+async function refreshMemory() {
+  try {
+    const d  = await fetch('/memory').then(r => r.json());
+    const el = document.getElementById('memory-scroll');
+    document.getElementById('mem-count').textContent =
+      `${d.lines} entr${d.lines!==1?'ies':'y'}${d.compacting?' (compacting…)':''}`;
+    if (!d.entries.length) { el.innerHTML = '<span class="ph">No memory yet</span>'; return; }
+    const top = el.scrollTop;
+    el.innerHTML = d.entries.map(e => {
+      const mt = e.match(/^(\[Turn \d+\])\s*(.*)/s);
+      if (mt) return `<div class="mem-entry"><span class="mem-turn">${mt[1]}</span>${esc(mt[2])}</div>`;
+      const ms = e.match(/^(\[Summary\])\s*(.*)/s);
+      if (ms) return `<div class="mem-entry mem-summary"><span class="mem-turn mem-summary-badge">${ms[1]}</span>${esc(ms[2])}</div>`;
+      return `<div class="mem-entry">${esc(e)}</div>`;
+    }).join('');
+    el.scrollTop = top;
+  } catch {}
+}
+
+const ACT_BADGE = {
+  decision:'badge-decision', checkpoint:'badge-checkpoint',
+  memory:'badge-memory', compact:'badge-compact', codex:'badge-codex'
+};
+async function refreshActivity() {
+  try {
+    const d  = await fetch('/activity').then(r => r.json());
+    const el = document.getElementById('activity-scroll');
+    if (!d.activity.length) { el.innerHTML = '<span class="ph">No activity yet</span>'; return; }
+    const top = el.scrollTop;
+    el.innerHTML = d.activity.map(a =>
+      `<div class="act-entry">
+        <span class="act-time">${esc(a.time)}</span>
+        <span class="act-badge ${ACT_BADGE[a.type]||''}">${esc(a.type)}</span>
+        <span class="act-desc">${esc(a.desc)}</span>
+      </div>`
+    ).join('');
+    el.scrollTop = top;
+  } catch {}
+}
+
+async function clearMemory() {
+  if (!confirm('Clear all memory?')) return;
+  await fetch('/memory', {method:'DELETE'});
+  refreshMemory();
+}
+
+function toggleAsk(btn) {
+  const body = document.getElementById('ask-body');
+  const open = body.style.display === 'block';
+  body.style.display = open ? 'none' : 'block';
+  btn.innerHTML = (open ? '&#9656;' : '&#9662;') + ' Ask the AI';
+}
+
+async function ask() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('btn');
+  btn.disabled = true; btn.textContent = 'Thinking…';
+  document.getElementById('answer').textContent = '';
+  document.getElementById('ask-tokens').textContent = '';
+  try {
+    const d = await fetch('/ask', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({question: q})
+    }).then(r => r.json());
+    if (d.error) {
+      document.getElementById('answer').innerHTML = `<span class="err">${esc(d.error)}</span>`;
+    } else {
+      document.getElementById('answer').textContent = d.answer;
+      document.getElementById('ask-tokens').textContent = `${d.prompt_tokens} in / ${d.completion_tokens} out`;
+    }
+  } catch { document.getElementById('answer').innerHTML = '<span class="err">Request failed</span>'; }
+  btn.disabled = false; btn.textContent = 'Ask (Ctrl+Enter)';
+}
+
+let _lastPromptData = null;
+async function showLastPrompt() {
+  try {
+    const d = await fetch('/last-prompt').then(r => r.json());
+    _lastPromptData = d;
+    const meta = [];
+    if (d.model)       meta.push(`model: ${esc(d.model)}`);
+    if (d.max_tokens)  meta.push(`max_tokens: ${d.max_tokens}`);
+    if (d.temperature !== undefined) meta.push(`temp: ${d.temperature}`);
+    if (d.extra_body)  meta.push(`extra_body: ${esc(JSON.stringify(d.extra_body))}`);
+    if (d.response_format) meta.push(`format: ${esc(d.response_format.type||JSON.stringify(d.response_format))}`);
+    document.getElementById('prompt-meta').textContent = meta.join('  ·  ');
+    let html = (d.messages||[]).map(m =>
+      `<div class="prompt-section">
+        <div class="prompt-role">${esc(m.role)}</div>
+        <div class="prompt-body">${esc(m.content)}</div>
+      </div>`
+    ).join('');
+    const cd = d.codex_debug;
+    if (cd) {
+      const lines = [`Fragment unique refs: ${cd.unique_fragment_refs}  →  max inject K = ${cd.max_inject}`];
+      if (cd.reason) lines.push(`Note: ${cd.reason}`);
+      if (cd.injected&&cd.injected.length) {
+        lines.push('\nInjected:');
+        cd.injected.forEach(e => lines.push(`  ✓  ${e.title}  ×${e.count}`));
+      } else lines.push('\nInjected: (none)');
+      if (cd.dropped&&cd.dropped.length) {
+        lines.push('\nDropped (K limit):');
+        cd.dropped.forEach(e => lines.push(`  –  ${e.title}  ×${e.count}`));
+      }
+      if (cd.no_summary&&cd.no_summary.length) {
+        lines.push('\nNo summary cached:');
+        cd.no_summary.forEach(t => lines.push(`  ?  ${t}`));
+      }
+      if (cd.not_in_fragment&&cd.not_in_fragment.length) {
+        lines.push('\nIn queue, not referenced this fragment:');
+        cd.not_in_fragment.forEach(t => lines.push(`  ·  ${t}`));
+      }
+      html += `<div class="prompt-section">
+        <div class="prompt-role">Codex selection</div>
+        <div class="prompt-body">${esc(lines.join('\n'))}</div>
+      </div>`;
+    }
+    const rd = d.reports_debug;
+    if (rd && (rd.all && rd.all.length || rd.selected && rd.selected.length)) {
+      const sel = new Set(rd.selected || []);
+      const lines = [`Reports shown: ${(rd.selected||[]).length} of ${(rd.all||[]).length} available`];
+      lines.push('');
+      (rd.all||[]).forEach(r => lines.push(`  ${sel.has(r) ? '✓' : '·'}  ${r}`));
+      html += `<div class="prompt-section">
+        <div class="prompt-role">Reports selection</div>
+        <div class="prompt-body">${esc(lines.join('\n'))}</div>
+      </div>`;
+    }
+    document.getElementById('prompt-sections').innerHTML = html;
+    document.getElementById('prompt-modal').style.display = 'block';
+  } catch { alert('No prompt captured yet.'); }
+}
+
+function copyPrompt() {
+  if (!_lastPromptData) return;
+  const text = (_lastPromptData.messages||[])
+    .map(m => `=== ${m.role.toUpperCase()} ===\n${m.content}`).join('\n\n');
+  navigator.clipboard.writeText(text).then(() => {
+    const b = document.getElementById('prompt-copy-btn');
+    b.textContent = 'Copied!';
+    setTimeout(() => b.textContent = 'Copy all', 1500);
+  });
+}
+
+async function quitServer() {
+  if (!confirm('Shut down the server?')) return;
+  document.querySelectorAll('.mast-btn').forEach(b => b.disabled = true);
+  try { await fetch('/quit', {method:'POST'}); } catch {}
+  document.getElementById('status').textContent = 'Server stopped.';
+}
+
+document.getElementById('q').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ask(); }
+});
+
+// Remove all the individual setIntervals and use one master loop
+async function masterRefresh() {
+  // Promise.all runs both fetches at the exact same time
+  await Promise.all([
+    refresh(),
+    refreshDecisions(),
+    // You can also add refreshActivity() here if you want it synced
+  ]);
+}
+
+// Initial load
+masterRefresh();
+refreshMemory();
+refreshActivity(); // if not included above
+
+// Poll everything in unison every 3 seconds
+setInterval(masterRefresh, 3000);
+setInterval(refreshMemory, 10000); // Memory can stay slower if it's heavy
+setInterval(refreshActivity, 5000);
+</script>
+</body>
+</html>

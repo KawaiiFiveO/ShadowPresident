@@ -1,0 +1,24 @@
+# Ignore Visual Studio temporary files
+.vs/
+obj/
+bin/
+
+# Ignore BepInEx and Game DLLs
+*.dll
+
+# Ignore local developer paths
+Directory.Build.props
+*.user
+
+# Ignore AI run logs
+Server/logs/
+Server/memory.txt
+Server/export_cmd.txt
+Server/codex.json
+Server/*.md
+
+# Ignore the Claude config files
+CLAUDE.md
+.mcp.json
+.claude/
+.editorconfig
