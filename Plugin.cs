@@ -53,8 +53,8 @@ public class Plugin : BasePlugin
             "Send decisions to the AI server. If false, all choices are made randomly.");
         AIServerUrl = Config.Bind("AI", "ServerUrl", "http://localhost:1954",
             "URL of the Shadow President AI server.");
-        AIContextLines = Config.Bind("AI", "ContextLines", 500,
-            "Rolling dialogue buffer size sent to the server. The server trims to its max_context_tokens budget before sending to the LLM.");
+        AIContextLines = Config.Bind("AI", "ContextLines", 700,
+            "Rolling dialogue buffer size sent to the server. The server trims to its derived context budget before sending to the LLM. Not maxed deliberately — avoids lost-in-the-middle and per-decision latency over hundreds of decisions.");
         OverlayDuration = Config.Bind("AI", "OverlayDuration", 30f,
             "Seconds the AI reasoning overlay stays visible before fading. Resets on each new reasoning.");
 
@@ -129,6 +129,18 @@ public class Plugin : BasePlugin
         GameObject.DontDestroyOnLoad(gsrObj);
         Log.LogInfo("[GameStateReader] Injected.");
 
+        ClassInjector.RegisterTypeInIl2Cpp<JournalReader>();
+        var journalObj = new GameObject("ShadowPresidentJournalReader");
+        journalObj.AddComponent<JournalReader>();
+        GameObject.DontDestroyOnLoad(journalObj);
+        Log.LogInfo("[JournalReader] Injected.");
+
+        ClassInjector.RegisterTypeInIl2Cpp<GraphReader>();
+        var graphObj = new GameObject("ShadowPresidentGraphReader");
+        graphObj.AddComponent<GraphReader>();
+        GameObject.DontDestroyOnLoad(graphObj);
+        Log.LogInfo("[GraphReader] Injected.");
+
         ClassInjector.RegisterTypeInIl2Cpp<BackgroundController>();
         var bgObj = new GameObject("ShadowPresidentBackgroundController");
         bgObj.AddComponent<BackgroundController>();
@@ -140,5 +152,9 @@ public class Plugin : BasePlugin
         customizationObj.AddComponent<CharacterCustomizationDriver>();
         GameObject.DontDestroyOnLoad(customizationObj);
         Log.LogInfo("[CharacterCustomizationDriver] CharacterCustomizationDriver injected.");
+
+        // Seed the rolling context from the server's restored window (resume support).
+        // Fire-and-forget on a background thread so an unreachable/slow server can't block load.
+        System.Threading.Tasks.Task.Run(() => AIClient.FetchResume());
     }
 }

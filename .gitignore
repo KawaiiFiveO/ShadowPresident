@@ -12,7 +12,9 @@ Directory.Build.props
 
 # Ignore AI run logs
 Server/logs/
+Server/completed/
 Server/memory.txt
+Server/manifesto.txt
 Server/export_cmd.txt
 Server/codex.json
 Server/*.md

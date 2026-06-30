@@ -141,14 +141,6 @@ public class GameStateReader : MonoBehaviour
     // ── Newspaper reading ─────────────────────────────────────────────────────
 
     private const int ArticleMaxChars  = 300;
-    private const int ArticlesPerRead  = 2;
-
-    // Rotating-window cursor for newspaper articles. _newsOffset marches forward through
-    // the current turn's article list one read at a time so the AI sees fresh papers as a
-    // turn progresses (a turn spans many events and the papers keep updating). _newsTurn
-    // detects a turn change so the cursor resets when a new turn's papers replace the set.
-    private static int _newsTurn   = -1;
-    private static int _newsOffset = 0;
 
     private static unsafe string ReadArticles(int currentTurn)
     {
@@ -182,41 +174,17 @@ public class GameStateReader : MonoBehaviour
 
         articles.Sort((a, b) => a.idx.CompareTo(b.idx));
 
-        int count = articles.Count;
-
-        // Rotating window: advance a cursor a little each read so successive reads surface
-        // fresh articles and, over the turn, cycle through the whole set. The window is NOT
-        // keyed to the turn number — a turn spans many conversations/events and the papers
-        // update throughout, so a turn-derived offset would freeze the same articles for the
-        // entire turn. Reset the cursor only when the turn changes (new turn = a fresh set of
-        // papers, start from the top).
-        if (currentTurn != _newsTurn)
+        // Send the FULL current-turn article set, one per line. The rotating window that decides
+        // which articles the AI actually sees each decision now lives on the server (so the
+        // browser panel can show the whole set and grey the un-sent portion). Format the raw
+        // NameInDatabase (e.g. "SharedNewspaper_Geopolitico") into a readable name so the AI
+        // never sees the internal database key.
+        var lines = new List<string>(articles.Count);
+        foreach (var (_, paper, title, desc) in articles)
         {
-            _newsTurn   = currentTurn;
-            _newsOffset = 0;
-        }
-        _newsOffset %= count;  // articles can be added/removed mid-turn — keep cursor in range
-
-        int take = Math.Min(ArticlesPerRead, count);
-        var usedPapers = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-
-        var lines = new List<string>(take);
-        int scanned = 0;
-        while (scanned < count && lines.Count < take)
-        {
-            var (_, paper, title, desc) = articles[(_newsOffset + scanned) % count];
-            scanned++;
-            // One article per newspaper per read; a skipped one comes around on a later read.
-            if (!string.IsNullOrWhiteSpace(paper) && !usedPapers.Add(paper)) { continue; }
-            // Format the raw NameInDatabase (e.g. "SharedNewspaper_Geopolitico") into a readable
-            // name ("Geopolitico") so the AI doesn't see the internal database key.
             string prefix = string.IsNullOrWhiteSpace(paper) ? "" : $"[{FormatPaperName(paper)}] ";
             lines.Add($"{prefix}\"{title}\" — {desc}");
         }
-
-        // Advance the cursor past everything scanned this read so the next read continues
-        // forward through the list (wrapping at the end) — full coverage, no fixed subset.
-        _newsOffset = (_newsOffset + scanned) % count;
 
         return string.Join("\n", lines);
     }

@@ -222,23 +222,38 @@ def render_decision(o, player_name, idx):
     )
 
 
+def latest_manifesto(entries):
+    """Return the text of the last manifesto entry in the run (its final form), or ''."""
+    text = ""
+    for o in entries:
+        if o.get("type") == "manifesto":
+            text = clean(o.get("text", ""))
+    return text
+
+
 def build(entries, player_name):
     """Returns (toc_html, body_html, sections_by_turn). Sections are delimited by
     checkpoints (conversation/fragment boundaries) and grouped by turn for the nav."""
     sections = []           # list of dicts: {id, turn, title, html_parts}
     cur = {"turn": entries[0].get("turn", 1) if entries else 1,
-           "title": None, "parts": [], "has_epilogue": False}
+           "title": None, "parts": [], "has_epilogue": False, "has_prologue": False}
     dec_idx = 0
 
-    def close(frag, turn):
+    def close(frag, turn, stats=None, economy=None):
         nonlocal cur
         if cur["parts"] or cur["title"] is not None:
-            cur["title"] = pretty_fragment(frag) if cur["title"] is None else cur["title"]
+            if cur["has_prologue"]:
+                cur["title"] = "Prologue"
+            elif cur["title"] is None:
+                cur["title"] = pretty_fragment(frag)
             cur["id"] = f"sec-{len(sections)}"
             if turn is not None:
                 cur["turn"] = turn
+            cur["stats"] = stats
+            cur["economy"] = economy
             sections.append(cur)
-        cur = {"turn": turn or 1, "title": None, "parts": [], "has_epilogue": False}
+        cur = {"turn": turn or 1, "title": None, "parts": [],
+               "has_epilogue": False, "has_prologue": False}
 
     for o in entries:
         t = o.get("type")
@@ -250,10 +265,15 @@ def build(entries, player_name):
         elif t == "decision":
             if o.get("phase") == "epilogue":
                 cur["has_epilogue"] = True
+            elif o.get("phase") == "prologue":
+                cur["has_prologue"] = True
             cur["parts"].append(render_decision(o, player_name, dec_idx))
             dec_idx += 1
+        elif t == "manifesto":
+            continue   # manifesto is consolidated into one collapsed end panel, not inline
         elif t == "checkpoint":
-            close(o.get("fragment", ""), o.get("turn"))
+            close(o.get("fragment", ""), o.get("turn"),
+                  o.get("stats"), o.get("economy"))
 
     # trailing unterminated section (run ended mid-fragment, or epilogue which has no checkpoint)
     if cur["parts"]:
@@ -286,10 +306,12 @@ def build(entries, player_name):
                               f'<span class="th-l">TURN</span> '
                               f'<span class="th-n">{turn:02d}</span></h2>')
             last_turn = turn
+        econ_strip = render_econ_strip(s.get("stats"), s.get("economy"))
         body_parts.append(
             f'<section class="section" id="{s["id"]}" data-turn="{turn}">'
             f'<h3 class="sec-head"><span class="sec-dot">■</span> {esc(s["title"])}'
             f'<span class="sec-meta">T{turn:02d}</span></h3>'
+            f'{econ_strip}'
             f'<div class="sec-body">{"".join(s["parts"])}</div>'
             f'</section>'
         )
@@ -354,6 +376,178 @@ def compute_stats(entries):
         "prompt": prompt,
         "duration": duration,
     }
+
+
+# ── economy parsing + chart ─────────────────────────────────────────────────────
+
+def parse_stats(s):
+    """'Government Budget: 7 | Personal Wealth: 2 | Economy: Unstable' ->
+    {'budget': 7, 'wealth': 2, 'label': 'Unstable'}.  Missing fields -> None."""
+    if not s:
+        return {}
+    out = {}
+    mb = re.search(r"Government Budget:\s*(-?\d+)", s)
+    mw = re.search(r"Personal Wealth:\s*(-?\d+)", s)
+    ml = re.search(r"Economy:\s*([A-Za-z ]+)", s)
+    if mb:
+        out["budget"] = int(mb.group(1))
+    if mw:
+        out["wealth"] = int(mw.group(1))
+    if ml:
+        out["label"] = ml.group(1).strip()
+    return out
+
+
+def parse_econ_now(e):
+    """'Economic Stability: ... (now 3, chg -1)' -> 3.  Missing -> None."""
+    if not e:
+        return None
+    m = re.search(r"now (-?\d+)", e)
+    return int(m.group(1)) if m else None
+
+
+def compute_economy_series(entries):
+    """Walk checkpoints in order, building a per-checkpoint series of
+    {turn, budget, wealth, stability}.  Used by the chart; values may be None."""
+    series = []
+    for o in entries:
+        if o.get("type") != "checkpoint":
+            continue
+        st = parse_stats(o.get("stats"))
+        if not st and o.get("economy") is None:
+            continue
+        series.append({
+            "turn": o.get("turn"),
+            "budget": st.get("budget"),
+            "wealth": st.get("wealth"),
+            "stability": parse_econ_now(o.get("economy")),
+        })
+    return series
+
+
+def render_econ_strip(stats, economy):
+    """Compact per-section economy bar: Budget / Wealth / Stability chips + label."""
+    st = parse_stats(stats)
+    if not st:
+        return ""
+    chips = []
+    if "budget" in st:
+        chips.append(f'<span class="ec-chip ec-budget">BUDGET <b>{st["budget"]}</b></span>')
+    if "wealth" in st:
+        chips.append(f'<span class="ec-chip ec-wealth">WEALTH <b>{st["wealth"]}</b></span>')
+    stab = parse_econ_now(economy)
+    if stab is not None:
+        chips.append(f'<span class="ec-chip ec-stab">STABILITY <b>{stab}</b></span>')
+    if "label" in st:
+        lab = st["label"].lower().replace(" ", "-")
+        chips.append(f'<span class="ec-chip ec-label ec-{esc(lab)}">{esc(st["label"])}</span>')
+    if not chips:
+        return ""
+    return f'<div class="econ-strip">{"".join(chips)}</div>'
+
+
+def render_economy_chart(series):
+    """Inline SVG multi-line chart of Budget / Personal Wealth / Economic Stability
+    over the run (one x-step per checkpoint).  Handles negative values via a 0 line."""
+    pts = [p for p in series if any(p[k] is not None for k in ("budget", "wealth", "stability"))]
+    if len(pts) < 2:
+        return '<div class="econ-empty">// no economy data recorded for this run</div>'
+
+    W, H = 860, 348
+    padL, padR, padT, padB = 46, 24, 24, 64   # padB leaves room for turn labels + legend row
+    plotW = W - padL - padR
+    plotH = H - padT - padB
+    x0, y0 = padL, padT
+    x1, y1 = padL + plotW, padT + plotH
+
+    vals = [p[k] for p in pts for k in ("budget", "wealth", "stability") if p[k] is not None]
+    vmin, vmax = min(vals), max(vals)
+    if vmin == vmax:
+        vmin -= 1
+        vmax += 1
+    pad = max(1, (vmax - vmin) * 0.08)
+    vmin -= pad
+    vmax += pad
+
+    n = len(pts)
+    def sx(i):
+        return x0 + (plotW * i / (n - 1) if n > 1 else 0)
+    def sy(v):
+        return y1 - (v - vmin) / (vmax - vmin) * plotH
+
+    grid = "#0c2a33"
+    dim = "#155563"
+    series_defs = [
+        ("budget",    "Gov. Budget",         "#ffb000"),
+        ("wealth",    "Personal Wealth",     "#36ffc2"),
+        ("stability", "Economic Stability",  "#ff5fd2"),
+    ]
+    fm = "font-family=\"'Cascadia Mono','Consolas',monospace\""
+
+    o = [f'<svg viewBox="0 0 {W} {H}" style="display:block;width:100%;height:auto" '
+         f'xmlns="http://www.w3.org/2000/svg">']
+    o.append(f'<rect x="{x0}" y="{y0}" width="{plotW}" height="{plotH}" '
+             f'fill="#030b0f" stroke="{dim}" stroke-width="1"/>')
+
+    # horizontal gridlines + y labels (~5 integer-ish ticks)
+    span = vmax - vmin
+    step = max(1, round(span / 5))
+    tick = int(vmin // step) * step
+    while tick <= vmax:
+        if vmin <= tick <= vmax:
+            gy = sy(tick)
+            is_zero = (tick == 0)
+            o.append(f'<line x1="{x0}" y1="{gy:.1f}" x2="{x1}" y2="{gy:.1f}" '
+                     f'stroke="{"#3a1f60" if is_zero else grid}" '
+                     f'stroke-width="{"1.5" if is_zero else "1"}"/>')
+            o.append(f'<text x="{x0-8}" y="{gy+3:.1f}" text-anchor="end" fill="#1f8294" '
+                     f'{fm} font-size="10">{tick}</text>')
+        tick += step
+
+    # vertical turn separators + turn labels where the turn increments
+    last_turn = None
+    for i, p in enumerate(pts):
+        t = p["turn"]
+        if t is not None and t != last_turn:
+            gx = sx(i)
+            o.append(f'<line x1="{gx:.1f}" y1="{y0}" x2="{gx:.1f}" y2="{y1}" '
+                     f'stroke="{grid}" stroke-width="1" stroke-dasharray="2 4"/>')
+            o.append(f'<text x="{gx:.1f}" y="{y1+14}" text-anchor="middle" fill="#1f8294" '
+                     f'{fm} font-size="9">T{t:02d}</text>')
+            last_turn = t
+
+    # series polylines + end-dots
+    for key, _, col in series_defs:
+        seg = []
+        for i, p in enumerate(pts):
+            v = p[key]
+            if v is None:
+                continue
+            seg.append(f"{sx(i):.1f},{sy(v):.1f}")
+        if len(seg) >= 2:
+            o.append(f'<polyline points="{" ".join(seg)}" fill="none" stroke="{col}" '
+                     f'stroke-width="1.8" opacity="0.9"/>')
+        if seg:
+            ex, ey = seg[-1].split(",")
+            o.append(f'<circle cx="{ex}" cy="{ey}" r="3" fill="{col}"/>')
+
+    # legend (centered row beneath the plot, so it can't overflow the viewBox)
+    items = []
+    for key, name, col in series_defs:
+        cur = next((p[key] for p in reversed(pts) if p[key] is not None), None)
+        label = name + (f" ({cur})" if cur is not None else "")
+        items.append((label, col))
+    widths = [24 + len(lab) * 6 + 26 for lab, _ in items]   # swatch + text + trailing gap
+    lx = (W - sum(widths)) / 2
+    ly = y1 + 44
+    for (lab, col), w in zip(items, widths):
+        o.append(f'<line x1="{lx:.1f}" y1="{ly}" x2="{lx+18:.1f}" y2="{ly}" stroke="{col}" stroke-width="2.4"/>')
+        o.append(f'<circle cx="{lx+9:.1f}" cy="{ly}" r="2.6" fill="{col}"/>')
+        o.append(f'<text x="{lx+24:.1f}" y="{ly+3.5:.1f}" fill="{col}" {fm} font-size="10">{esc(lab)}</text>')
+        lx += w
+
+    o.append('</svg>')
+    return f'<div class="econ-chart">{"".join(o)}</div>'
 
 
 # ── static assets (no f-strings: keep literal { } intact) ──────────────────────────
@@ -557,6 +751,23 @@ main{padding:18px 26px 120px;max-width:1100px}
 .decision.open .reasoning,body.show-reasoning .reasoning{display:block}
 body.show-reasoning .r-toggle:not([disabled]){border-color:var(--cyan)}
 
+/* per-section economy strip (state at the scene boundary) */
+.econ-strip{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px 6px;padding-left:14px}
+.ec-chip{font-size:11px;letter-spacing:.08em;padding:2px 9px;border:1px solid currentColor;
+  color:var(--dim);background:#03141a;display:inline-flex;gap:6px;align-items:center}
+.ec-chip b{font-weight:700;font-size:12px}
+.ec-budget{color:var(--amber)}
+.ec-wealth{color:var(--cyan)}
+.ec-stab{color:var(--pink)}
+.ec-label{letter-spacing:.12em}
+.ec-stable{color:var(--cyan)}
+.ec-unstable{color:var(--amber)}
+.ec-danger{color:var(--red)}
+
+/* whole-run economy chart */
+.econ-chart{padding:8px 14px 6px}
+.econ-empty{padding:14px 16px;color:#52666a;font-style:italic}
+
 .entry.hidden{display:none}
 .section.hidden,.turn-marker.hidden{display:none}
 mark{background:var(--amber);color:#000;padding:0 1px}
@@ -698,8 +909,6 @@ JS = r"""
       if(h){fp();cl();var l=h[1].length;out.push('<h'+l+'>'+mdInline(mdEsc(h[2]))+'</h'+l+'>');continue;}
       if(/^\s*([-*+])\s+/.test(ln)){fp();if(list!=='ul'){cl();out.push('<ul>');list='ul';}
         out.push('<li>'+mdInline(mdEsc(ln.replace(/^\s*[-*+]\s+/,'')))+'</li>');continue;}
-      if(/^\s*\d+\.\s+/.test(ln)){fp();if(list!=='ol'){cl();out.push('<ol>');list='ol';}
-        out.push('<li>'+mdInline(mdEsc(ln.replace(/^\s*\d+\.\s+/,'')))+'</li>');continue;}
       if(/^\s*([-*_] *){3,}$/.test(ln)){fp();cl();out.push('<hr>');continue;}
       if(/^\s*\|/.test(ln)){
         fp();cl();
@@ -782,6 +991,8 @@ JS = r"""
   setupPanel('end2');
   setupPlainPanel('memory');
   setupCollapse('memory');
+  setupPanel('manifesto');
+  setupCollapse('manifesto');
 })();
 """
 
@@ -872,6 +1083,8 @@ def main():
     ap.add_argument("--end1", help="markdown file for the first end-of-game summary panel")
     ap.add_argument("--end2", help="markdown file for the second end-of-game summary panel")
     ap.add_argument("--memory", help="text file containing the AI memory log for this run")
+    ap.add_argument("--manifesto", help="text/markdown file for the manifesto panel "
+                    "(defaults to the final manifesto entry in the log)")
     ap.add_argument("--align-x", type=float, metavar="X",
                     help="ideological X position [-1 Malenyevism … +1 Arcasian Capitalism]")
     ap.add_argument("--align-y", type=float, metavar="Y",
@@ -905,6 +1118,11 @@ def main():
     end1_prefill = read_prefill(args.end1)
     end2_prefill = read_prefill(args.end2)
     memory_prefill = read_prefill(args.memory)
+    # Manifesto: explicit file wins, else the final manifesto entry from the log.
+    manifesto_prefill = read_prefill(args.manifesto) or esc(latest_manifesto(entries))
+
+    economy_series = compute_economy_series(entries)
+    economy_chart_html = render_economy_chart(economy_series)
 
     has_dot = args.align_x is not None and args.align_y is not None
     align_label = args.align_label or player_name
@@ -951,6 +1169,8 @@ def main():
                "Markdown supported. Saved to this browser.")
     memory_ph = ("// AI memory at the end of this run. Paste the contents of memory.txt "
                  "or provide via --memory. Useful for comparing what the AI retained across runs.")
+    manifesto_ph = ("// The AI's living strategy manifesto. Defaults to the final version "
+                    "recorded in the log; override with --manifesto. Markdown supported.")
 
     html_out = (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -994,6 +1214,12 @@ f"<style>{CSS}</style></head><body>"
         f"<textarea class=\"md-edit\" spellcheck=\"false\">{sysprompt_prefill}</textarea>"
         "<div class=\"md-hint\">markdown · editable · saved to this browser · set via --sysprompt</div>"
         "</div>"
+        # ECONOMY TRAJECTORY chart (whole-run overview)
+        "<div id=\"economy\" class=\"md-panel accent-cyan\">"
+        "<h3>&gt;&gt; ECONOMY TRAJECTORY</h3>"
+        f"{economy_chart_html}"
+        "<div class=\"md-hint\">government budget · personal wealth · economic stability, per checkpoint</div>"
+        "</div>"
         f"{body_html}"
         # POST-GAME section header + end panels
         "<h2 class=\"postgame-header\">■■ POST-GAME ■■</h2>"
@@ -1017,6 +1243,15 @@ f"<style>{CSS}</style></head><body>"
         f"<div class=\"md-view\" data-ph=\"{esc(memory_ph)}\"></div>"
         f"<textarea class=\"md-edit\" spellcheck=\"false\">{memory_prefill}</textarea>"
         "<div class=\"md-hint\">plain text · editable · saved to this browser · set via --memory</div>"
+        "</div>"
+        # MANIFESTO — one collapsed panel, final version (markdown)
+        "<div id=\"manifesto\" class=\"md-panel accent-violet collapsed\">"
+        "<h3>&gt;&gt; MANIFESTO"
+        "<button class=\"md-collapse\">[+] EXPAND</button>"
+        "<button class=\"md-toggle\">EDIT</button></h3>"
+        f"<div class=\"md-view\" data-ph=\"{esc(manifesto_ph)}\"></div>"
+        f"<textarea class=\"md-edit\" spellcheck=\"false\">{manifesto_prefill}</textarea>"
+        "<div class=\"md-hint\">markdown · editable · saved to this browser · set via --manifesto</div>"
         "</div>"
         "</main></div>"
         f"<footer>SHADOW PRESIDENT run log · {esc(stats['run_id'])} · "

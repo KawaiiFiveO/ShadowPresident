@@ -41,6 +41,13 @@ button { cursor: pointer; font-family: inherit; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
 
+/* ── Sticky top wrapper (masthead + stats bar) ────────────────────────────── */
+#top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
 /* ── Masthead ─────────────────────────────────────────────────────────────── */
 #masthead {
   background: var(--bg2);
@@ -49,9 +56,6 @@ button { cursor: pointer; font-family: inherit; }
   display: flex;
   align-items: baseline;
   gap: 14px;
-  position: sticky;
-  top: 0;
-  z-index: 50;
 }
 #masthead h1 {
   font-family: 'Cinzel', serif;
@@ -115,6 +119,7 @@ button { cursor: pointer; font-family: inherit; }
   color: var(--text-dim);
   min-height: 26px;
   line-height: 1.4;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
 }
 .sv { color: var(--text); font-weight: 700; }
 .stat-sep { color: var(--text-mute); padding: 0 8px; }
@@ -122,17 +127,31 @@ button { cursor: pointer; font-family: inherit; }
 /* ── Layout: body columns ─────────────────────────────────────────────────── */
 #layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 340px 1fr 340px;
   gap: 0;
-  max-width: 1400px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 0 16px;
 }
-@media (max-width: 950px) { #layout { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { 
+  #layout { grid-template-columns: 1fr; }
+  #left-sidebar { order: 2; padding: 16px 0 0 0 !important; }
+  #transcript-col { order: 1; border-left: none !important; border-right: none !important; padding: 16px 0 0 0 !important; }
+  #right-sidebar { order: 3; padding: 16px 0 0 0 !important; }
+}
 
-/* ── Left: transcript ─────────────────────────────────────────────────────── */
-#transcript-col {
+/* ── Left sidebar ─────────────────────────────────────────────────────────── */
+#left-sidebar {
   padding: 16px 20px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Center: transcript ───────────────────────────────────────────────────── */
+#transcript-col {
+  padding: 16px 20px 0 20px;
+  border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
 .section-label {
@@ -306,8 +325,8 @@ button { cursor: pointer; font-family: inherit; }
 }
 
 /* ── Right sidebar ────────────────────────────────────────────────────────── */
-#sidebar {
-  padding: 16px 0 0 16px;
+#right-sidebar {
+  padding: 16px 0 0 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -347,7 +366,7 @@ button { cursor: pointer; font-family: inherit; }
 .card-collapse.collapsed { display: none; }
 
 /* News */
-#news-list { font-size: 12px; line-height: 1.6; }
+#news-list { font-size: 12px; line-height: 1.6; max-height: 240px; overflow-y: auto; }
 .news-entry { padding: 3px 0; border-bottom: 1px solid var(--border); }
 .news-entry:last-child { border-bottom: none; }
 .news-entry.expandable { cursor: pointer; }
@@ -365,7 +384,7 @@ button { cursor: pointer; font-family: inherit; }
 .report-entry:last-child { border-bottom: none; margin-bottom: 0; }
 .report-entry.expandable { cursor: pointer; }
 .report-title { color: #a0d0b8; display: block; font-size: 11.5px; }
-.report-desc  { color: var(--text-dim); font-size: 11px; font-style: italic; display: none; margin-top: 2px; }
+.report-desc  { color: var(--text-dim); font-size: 11px; display: none; margin-top: 2px; }
 .report-entry.open .report-desc { display: block; }
 
 /* Codex cards */
@@ -398,7 +417,6 @@ button { cursor: pointer; font-family: inherit; }
   color: #b8a8d0;
   line-height: 1.6;
   background: #161422;
-  font-style: italic;
   display: none;
   white-space: pre-wrap;
 }
@@ -407,11 +425,14 @@ button { cursor: pointer; font-family: inherit; }
 .stack-track { height: 10px; border-radius: 3px; overflow: hidden; display: flex; background: var(--bg); }
 .stack-seg   { height: 100%; transition: width 0.5s ease; flex-shrink: 0; }
 .seg-sysprompt { background: var(--gold); }
+.seg-manifesto { background: #5fd0a8; }
 .seg-memory    { background: #9b59b6; }
+.seg-ledger    { background: #b8923e; }
 .seg-context   { background: var(--teal); }
 .seg-codex     { background: #4a82b8; }
 .seg-news      { background: #c77d4a; }
 .seg-reports   { background: #7d9a5a; }
+.seg-economy   { background: #6d8aa8; }
 .seg-overhead  { background: #585858; }
 .seg-reserved  { background: #2e2e2e; }
 .stack-legend  { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-bottom: 6px; }
@@ -434,7 +455,7 @@ button { cursor: pointer; font-family: inherit; }
 
 /* Activity & Memory row */
 #lower-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-             max-width: 1400px; margin: 12px auto 0; padding: 0 16px; }
+             max-width: 1800px; margin: 12px auto 0; padding: 0 16px; }
 @media (max-width: 700px) { #lower-row { grid-template-columns: 1fr; } }
 
 #activity-scroll { max-height: 180px; overflow-y: auto; padding-bottom: 4px; }
@@ -452,6 +473,72 @@ button { cursor: pointer; font-family: inherit; }
 .badge-memory     { background: #101020; color: #889; }
 .badge-compact    { background: #201000; color: #c87; }
 .badge-codex      { background: #180e28; color: #9a8; }
+
+/* Presidential Manifesto */
+#manifesto-box {
+  max-height: 240px;
+  overflow-y: auto;
+  background: #0e1410;
+  border: 1px solid #1e2a22;
+  border-radius: var(--r);
+  padding: 8px 10px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #b8d0c4;
+  white-space: pre-wrap;
+  font-family: 'Libre Baskerville', serif;
+}
+#manifesto-box b {
+  color: #5fd0a8;
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+/* Economy trajectory — styled like the Press/Reports rows (no monospace) */
+#economy-box { margin-top: 4px; }
+.econ-line { padding: 3px 0; border-bottom: 1px solid var(--border);
+             font-size: 11.5px; line-height: 1.6; color: var(--text-dim); }
+.econ-line:last-child { border-bottom: none; }
+.econ-title { color: var(--gold-pale); }
+
+/* Ledger (durable journal facts) */
+#ledger-box {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.ledger-entry {
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid #1e3a3a;
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #a8c4c0;
+  font-family: 'Libre Baskerville', serif;
+}
+.ledger-entry:last-child { margin-bottom: 0; }
+.ledger-turn {
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--gold-dim);
+  margin-right: 6px;
+}
+
+/* Visible-vs-sent: dim the parts the AI did not actually receive this decision. */
+.unsent { opacity: 0.38; }
+.unsent .news-paper, .unsent .news-title, .unsent .report-title { color: var(--text-mute); }
+.codex-unsent { color: var(--text-mute); opacity: 0.55; }
+.sent-hint {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 9px;
+  color: var(--text-mute);
+  font-weight: normal;
+  letter-spacing: 0;
+  text-transform: none;
+}
 
 /* Memory journal */
 #memory-scroll {
@@ -495,7 +582,7 @@ button { cursor: pointer; font-family: inherit; }
 .clear-btn:hover { border-color: #600; color: #c05050; }
 
 /* Ask section */
-#ask-row { max-width: 1400px; margin: 12px auto 0; padding: 0 16px; }
+#ask-row { max-width: 1800px; margin: 12px auto 0; padding: 0 16px; }
 .ask-toggle {
   background: none; border: none; color: var(--text-mute);
   font-family: 'Cinzel', serif; font-size: 9px; letter-spacing: 0.12em;
@@ -561,6 +648,9 @@ textarea:focus { border-color: var(--gold-dim); }
   </div>
 </div>
 
+<!-- Sticky top: Masthead + Stats -->
+<div id="top-bar">
+
 <!-- Masthead -->
 <div id="masthead">
   <h1>Shadow President <span class="dot" id="dot">●</span></h1>
@@ -579,10 +669,41 @@ textarea:focus { border-color: var(--gold-dim); }
 <!-- Stats -->
 <div id="stats-bar"><span class="ph">No stats yet</span></div>
 
+</div><!-- /top-bar -->
+
 <!-- Main layout -->
 <div id="layout">
 
-  <!-- Left: transcript -->
+  <!-- Left sidebar -->
+  <div id="left-sidebar">
+
+    <!-- Press -->
+    <div class="card">
+      <div class="card-title">Press <span class="sent-hint">dim = not sent to AI</span></div>
+      <div id="news-list"><span class="ph">No articles yet</span></div>
+    </div>
+
+    <!-- Reports -->
+    <div class="card">
+      <div class="card-title">Reports <span class="sent-hint">dim = not sent to AI</span></div>
+      <div id="reports-list"><span class="ph">No reports yet</span></div>
+    </div>
+
+    <!-- Economy trajectory -->
+    <div class="card">
+      <div class="card-title">Economy</div>
+      <div id="economy-box"><span class="ph">No data yet</span></div>
+    </div>
+
+    <!-- Codex injection -->
+    <div class="card">
+      <div class="card-title">Codex <span class="sent-hint">dim = beyond the summary sent</span></div>
+      <div id="codex-cards"><span class="ph">None injected</span></div>
+    </div>
+
+  </div><!-- /left-sidebar -->
+
+  <!-- Center: transcript -->
   <div id="transcript-col">
     <div class="section-label">
       Dialogue transcript
@@ -594,24 +715,24 @@ textarea:focus { border-color: var(--gold-dim); }
   </div>
 
   <!-- Right sidebar -->
-  <div id="sidebar">
+  <div id="right-sidebar">
 
-    <!-- Press -->
+    <!-- Presidential Manifesto -->
     <div class="card">
-      <div class="card-title">Press</div>
-      <div id="news-list"><span class="ph">No articles yet</span></div>
+      <div class="card-title">
+        Manifesto
+        <span class="ph" id="man-turn" style="font-size:10px;font-style:normal"></span>
+      </div>
+      <div id="manifesto-box"><span class="ph">Not drafted yet</span></div>
     </div>
 
-    <!-- Reports -->
+    <!-- Ledger (durable journal facts) -->
     <div class="card">
-      <div class="card-title">Reports</div>
-      <div id="reports-list"><span class="ph">No reports yet</span></div>
-    </div>
-
-    <!-- Codex injection -->
-    <div class="card">
-      <div class="card-title">Codex</div>
-      <div id="codex-cards"><span class="ph">None injected</span></div>
+      <div class="card-title">
+        Ledger
+        <span class="ph" id="ledger-count" style="font-size:10px;font-style:normal"></span>
+      </div>
+      <div id="ledger-box"><span class="ph">No entries yet</span></div>
     </div>
 
     <!-- Token budget -->
@@ -619,21 +740,27 @@ textarea:focus { border-color: var(--gold-dim); }
       <div class="card-title">Token budget</div>
       <div class="stack-legend">
         <span class="legend-item"><span class="swatch seg-sysprompt"></span>System <span id="l-sys">—</span></span>
+        <span class="legend-item"><span class="swatch seg-manifesto"></span>Manifesto <span id="l-man">—</span></span>
         <span class="legend-item"><span class="swatch seg-memory"></span>Memory <span id="l-mem">—</span></span>
+        <span class="legend-item"><span class="swatch seg-ledger"></span>Ledger <span id="l-ledger">—</span></span>
         <span class="legend-item"><span class="swatch seg-context"></span>Context <span id="l-ctx">—</span></span>
         <span class="legend-item"><span class="swatch seg-codex"></span>Codex <span id="l-codex">—</span></span>
         <span class="legend-item"><span class="swatch seg-news"></span>Press <span id="l-news">—</span></span>
         <span class="legend-item"><span class="swatch seg-reports"></span>Reports <span id="l-reports">—</span></span>
+        <span class="legend-item"><span class="swatch seg-economy"></span>Economy <span id="l-econ">—</span></span>
         <span class="legend-item"><span class="swatch seg-overhead"></span>Overhead <span id="l-oh">—</span></span>
         <span class="legend-item"><span class="swatch seg-reserved"></span>Reserved <span id="l-res">—</span></span>
       </div>
       <div class="stack-track">
         <div class="stack-seg seg-sysprompt" id="seg-sys"     style="width:0%"></div>
+        <div class="stack-seg seg-manifesto" id="seg-man"     style="width:0%"></div>
         <div class="stack-seg seg-memory"    id="seg-mem"     style="width:0%"></div>
+        <div class="stack-seg seg-ledger"    id="seg-ledger"  style="width:0%"></div>
         <div class="stack-seg seg-context"   id="seg-ctx"     style="width:0%"></div>
         <div class="stack-seg seg-codex"     id="seg-codex"   style="width:0%"></div>
         <div class="stack-seg seg-news"      id="seg-news"    style="width:0%"></div>
         <div class="stack-seg seg-reports"   id="seg-reports" style="width:0%"></div>
+        <div class="stack-seg seg-economy"   id="seg-econ"    style="width:0%"></div>
         <div class="stack-seg seg-overhead"  id="seg-oh"      style="width:0%"></div>
         <div class="stack-seg seg-reserved"  id="seg-res"     style="width:0%"></div>
       </div>
@@ -653,7 +780,7 @@ textarea:focus { border-color: var(--gold-dim); }
       <div id="decisions-scroll"><span class="ph">No decisions yet</span></div>
     </div>
 
-  </div><!-- /sidebar -->
+  </div><!-- /right-sidebar -->
 </div><!-- /layout -->
 
 <!-- Activity + Memory -->
@@ -843,6 +970,24 @@ function renderContext(lines) {
 // ── Codex cards ───────────────────────────────────────────────────────────────
 let _openCodexTitles = new Set();
 let _codexSummaries  = {};
+let _codexRaws       = {};
+
+// Build a codex card body: the summary the AI received in normal text, with the remainder of the
+// full entry (everything past the summary — never sent to the AI) dimmed.
+function codexBodyHtml(title) {
+  const summary = _codexSummaries[title] || '';
+  const raw     = _codexRaws[title] || '';
+  if (!summary && !raw) return '(no summary cached)';
+  if (!raw) return esc(summary);
+  // The summary is a prefix of raw, possibly truncated mid-text with a trailing "…".
+  const visible = summary.replace(/[…\s]+$/, '');
+  if (visible && raw.startsWith(visible)) {
+    const tail = raw.slice(visible.length);
+    return esc(visible) + (tail ? `<span class="codex-unsent">${esc(tail)}</span>` : '');
+  }
+  // Prefix didn't line up (e.g. smart-quote corruption) — show the summary as-sent, full raw dimmed.
+  return esc(summary) + (raw !== summary ? `<div class="codex-unsent">${esc(raw)}</div>` : '');
+}
 
 function toggleCodexCard(titleKey) {
   if (_openCodexTitles.has(titleKey)) {
@@ -885,38 +1030,54 @@ function formatPaperName(raw) {
   return name.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 
-function renderNews(newsStr) {
+// The game supplies some headlines in ALL CAPS and others in normal case. Normalize the
+// shouty ones to Title Case so the Press panel reads consistently; leave mixed-case titles
+// (which carry intentional capitalization) untouched.
+function normalizeTitle(s) {
+  if (!s) return s;
+  const letters = s.replace(/[^A-Za-z]/g, '');
+  if (!letters) return s;
+  const lowers = (s.match(/[a-z]/g) || []).length;
+  if (lowers / letters.length > 0.15) return s;   // already mixed-case → leave as-is
+  return s.toLowerCase().replace(/[A-Za-z]+/g, w => w[0].toUpperCase() + w.slice(1));
+}
+
+function renderNews(newsStr, sentLines) {
   const el = document.getElementById('news-list');
   if (!newsStr || !newsStr.trim()) {
     el.innerHTML = '<span class="ph">No articles this turn</span>';
     return;
   }
-  
+
+  // Lines the AI actually received this decision (the rest are dimmed).
+  const sentSet = new Set((sentLines || []).map(s => s.trim()));
+
   const lines = newsStr.split('\n').filter(l => l.trim());
   const entries = [];
   let current = null;
-  
+
   lines.forEach(line => {
     // Look for the [Paper Name] Title format to anchor a new article
     const pm = line.match(/^\[([^\]]+)\]\s*(.*)/);
-    
+
     if (pm) {
       if (current) entries.push(current);
-      
+
       let content = pm[2];
       let desc = '';
-      
+
       // Handle the case where the description is on the same line separated by " — "
       const dash = content.indexOf(' — ');
       if (dash !== -1) {
         desc = content.slice(dash + 3).trim();
         content = content.slice(0, dash).trim();
       }
-      
+
       current = {
         paper: pm[1],
         title: content.replace(/^\s*["“”](.*)["“”]\s*$/, '$1'),
-        desc: desc
+        desc: desc,
+        raw: line.trim()   // anchor line, matched against the sent set
       };
     } else {
       // If it doesn't start with [Paper], it's a body line continuation
@@ -926,44 +1087,57 @@ function renderNews(newsStr) {
         // Failsafe: No active article, so we create a generic one
         const dash = line.indexOf(' — ');
         if (dash !== -1) {
-          current = { paper: '', title: line.slice(0, dash).trim(), desc: line.slice(dash + 3).trim() };
+          current = { paper: '', title: line.slice(0, dash).trim(), desc: line.slice(dash + 3).trim(), raw: line.trim() };
         } else {
-          current = { paper: '', title: line, desc: '' };
+          current = { paper: '', title: line, desc: '', raw: line.trim() };
         }
       }
     }
   });
   if (current) entries.push(current);
 
+  // Only dim when at least one shown article is in the sent set. If none match, the window is
+  // stale (the article set changed at a turn boundary before the next decision recomputed it) —
+  // dimming everything would wrongly imply the AI saw nothing, so show them all as normal.
+  const dimOn = sentSet.size > 0 && entries.some(e => sentSet.has(e.raw));
+
   el.innerHTML = entries.map(e => {
     const paperHtml = e.paper ? `<span class="news-paper">${esc(formatPaperName(e.paper))}</span>` : '';
-    const titleText = e.paper ? `“${esc(e.title)}”` : esc(e.title);
-    
+    const titleText = e.paper ? `“${esc(normalizeTitle(e.title))}”` : esc(normalizeTitle(e.title));
+    const dim = dimOn && !sentSet.has(e.raw) ? ' unsent' : '';
+
     if (e.desc) {
       const open = _openNewsKeys.has(e.title);
-      return `<div class="news-entry expandable${open?' open':''}" data-key="${esc(e.title)}" onclick="toggleNewsEntry(this)">${paperHtml}<span class="news-title">${titleText}</span><div class="news-desc">${esc(e.desc)}</div></div>`;
+      return `<div class="news-entry expandable${open?' open':''}${dim}" data-key="${esc(e.title)}" onclick="toggleNewsEntry(this)">${paperHtml}<span class="news-title">${titleText}</span><div class="news-desc">${esc(e.desc)}</div></div>`;
     }
-    return `<div class="news-entry">${paperHtml}<span class="news-title">${titleText}</span></div>`;
+    return `<div class="news-entry${dim}">${paperHtml}<span class="news-title">${titleText}</span></div>`;
   }).join('');
 }
 
-function renderReports(reportsStr) {
+function renderReports(reportsStr, sentLines) {
   const el = document.getElementById('reports-list');
   if (!reportsStr || !reportsStr.trim()) {
     el.innerHTML = '<span class="ph">No reports this turn</span>';
     return;
   }
-  
+
+  // Reports the AI was actually shown this decision (random sample); the rest are dimmed.
+  const sentSet = new Set((sentLines || []).map(s => s.trim()));
+  // Match either the full raw line or the reconstructed "Title — desc" (covers single-line and
+  // multi-line grouping).
+  const matches = e => sentSet.has(e.raw) || sentSet.has(`${e.title} — ${e.desc}`.trim());
+
   const entries = [];
-  
+
   // Method 1: If the backend cleanly separated reports with blank lines (\n\n), use block parsing
   if (reportsStr.includes('\n\n')) {
     const blocks = reportsStr.split(/\n\s*\n/).filter(b => b.trim());
     blocks.forEach(block => {
       const lines = block.split('\n').filter(l => l.trim());
+      const raw = lines.join(' ').trim();
       let title = lines[0];
       let desc = lines.slice(1).join(' ');
-      
+
       // The title line might still contain an inline dash
       const dash = title.indexOf(' — ');
       if (dash !== -1) {
@@ -971,21 +1145,21 @@ function renderReports(reportsStr) {
         desc = inlineDesc + (desc ? ' ' + desc : '');
         title = title.slice(0, dash).trim();
       }
-      entries.push({ title, desc });
+      entries.push({ title, desc, raw });
     });
   } else {
     // Method 2: Stateful line-by-line grouping (if no blank lines were provided)
     const lines = reportsStr.split('\n').filter(l => l.trim());
     let current = null;
-    
+
     lines.forEach(line => {
       const dash = line.indexOf(' — ');
-      
+
       if (dash !== -1) {
         if (current) entries.push(current);
-        current = { title: line.slice(0, dash).trim(), desc: line.slice(dash + 3).trim() };
+        current = { title: line.slice(0, dash).trim(), desc: line.slice(dash + 3).trim(), raw: line.trim() };
       } else if (!current) {
-        current = { title: line, desc: '' };
+        current = { title: line, desc: '', raw: line.trim() };
       } else if (!current.desc) {
         // First line after a title becomes its description
         current.desc = line;
@@ -995,7 +1169,7 @@ function renderReports(reportsStr) {
         const isTitle = line.length < 60 && !/[.!?]$/.test(line.trim());
         if (isTitle) {
           entries.push(current);
-          current = { title: line, desc: '' };
+          current = { title: line, desc: '', raw: line.trim() };
         } else {
           current.desc += ' ' + line;
         }
@@ -1004,16 +1178,49 @@ function renderReports(reportsStr) {
     if (current) entries.push(current);
   }
 
+  // Only dim when at least one shown report matches the sent set; otherwise the window is stale
+  // and dimming everything would be misleading.
+  const dimOn = sentSet.size > 0 && entries.some(matches);
+
   el.innerHTML = entries.map(e => {
+    const dim = dimOn && !matches(e) ? ' unsent' : '';
     if (e.desc) {
       const open = _openReportKeys.has(e.title);
-      return `<div class="report-entry expandable${open?' open':''}" data-key="${esc(e.title)}" onclick="toggleReportEntry(this)"><span class="report-title">${esc(e.title)}</span><div class="report-desc">${esc(e.desc)}</div></div>`;
+      return `<div class="report-entry expandable${open?' open':''}${dim}" data-key="${esc(e.title)}" onclick="toggleReportEntry(this)"><span class="report-title">${esc(e.title)}</span><div class="report-desc">${esc(e.desc)}</div></div>`;
     }
-    return `<div class="report-entry"><span class="report-title">${esc(e.title)}</span></div>`;
+    return `<div class="report-entry${dim}"><span class="report-title">${esc(e.title)}</span></div>`;
   }).join('');
 }
 
 // ── Main refresh ──────────────────────────────────────────────────────────────
+// Economy trajectory — one "Title: a -> b -> c (now x, chg y)" line per graph panel.
+function renderEconomy(text) {
+  const el = document.getElementById('economy-box');
+  const lines = String(text).split('\n').map(s => s.trim()).filter(Boolean);
+  if (!lines.length) { el.innerHTML = '<span class="ph">No data yet</span>'; return; }
+  el.innerHTML = lines.map(l => {
+    const ci = l.indexOf(': ');
+    if (ci === -1) return `<div class="econ-line">${esc(l)}</div>`;
+    return `<div class="econ-line"><span class="econ-title">${esc(l.slice(0,ci))}</span>: ${esc(l.slice(ci+2))}</div>`;
+  }).join('');
+}
+
+// Ledger — durable journal facts, one "Tnn: fact" line each.
+function renderLedger(text) {
+  const el  = document.getElementById('ledger-box');
+  const cnt = document.getElementById('ledger-count');
+  const lines = String(text).split('\n').map(s => s.trim()).filter(Boolean);
+  cnt.textContent = lines.length ? `${lines.length} entr${lines.length!==1?'ies':'y'}` : '';
+  if (!lines.length) { el.innerHTML = '<span class="ph">No entries yet</span>'; return; }
+  const top = el.scrollTop;
+  el.innerHTML = lines.map(l => {
+    const mt = l.match(/^(T\d+):\s*(.*)$/s);
+    if (mt) return `<div class="ledger-entry"><span class="ledger-turn">${mt[1]}</span>${esc(mt[2])}</div>`;
+    return `<div class="ledger-entry">${esc(l)}</div>`;
+  }).join('');
+  el.scrollTop = top;
+}
+
 async function refresh() {
   try {
     const d = await fetch('/context').then(r => r.json());
@@ -1025,8 +1232,10 @@ async function refresh() {
     document.getElementById('turn-chip').title = d.fragment || '';
 
     renderContext(d.context || []);
-    renderNews(d.news || '');
-    renderReports(d.reports || '');
+    renderNews(d.news_full || d.news || '', d.news_sent || []);
+    renderReports(d.reports_full || d.reports || '', d.reports_sent || []);
+    renderEconomy(d.economy || '');
+    renderLedger(d.journal || '');
 
     // Stats
     const statsEl = document.getElementById('stats-bar');
@@ -1043,7 +1252,7 @@ async function refresh() {
     // Codex cards
     const chips   = d.last_codex_injected || [];
     const cardsEl = document.getElementById('codex-cards');
-    chips.forEach(e => { _codexSummaries[e.title] = e.summary || ''; });
+    chips.forEach(e => { _codexSummaries[e.title] = e.summary || ''; _codexRaws[e.title] = e.raw || ''; });
     if (chips.length) {
       cardsEl.innerHTML = chips.map(e => {
         const open = _openCodexTitles.has(e.title);
@@ -1051,40 +1260,56 @@ async function refresh() {
           <div class="codex-card-header" onclick="toggleCodexCard(this.closest('.codex-card').dataset.title)">
             ${esc(e.title)}<span class="codex-card-arrow">${open?'▾':'▸'}</span>
           </div>
-          <div class="codex-card-body" style="display:${open?'block':'none'}">${esc(_codexSummaries[e.title] || '(no summary cached)')}</div>
+          <div class="codex-card-body" style="display:${open?'block':'none'}">${codexBodyHtml(e.title)}</div>
         </div>`;
       }).join('');
     } else {
       cardsEl.innerHTML = '<span class="ph">None injected</span>';
     }
 
-    // Token bar
+    // Token bar — composition of one full prompt against the window. System-prompt parts
+    // (System base · Manifesto · Memory · Ledger) then user-block parts (Context · Codex ·
+    // Press · Reports · Economy · Overhead) then the completion reservation (Reserved).
     const win   = d.context_window || 8192;
-    const sys   = d.est_sysprompt_tokens  || 0;
-    const mem   = d.est_memory_tokens     || 0;
-    const ctx   = d.est_context_tokens    || 0;
-    const codex = d.est_codex_tokens      || 0;
-    const news  = d.est_news_tokens       || 0;
-    const reps  = d.est_reports_tokens     || 0;
-    const oh    = d.est_overhead_tokens   || 0;
-    const res   = d.max_tokens            || 1024;
-    const lp    = d.last_prompt_tokens    || 0;
+    const sys   = d.est_sysprompt_tokens   || 0;
+    const man   = d.est_manifesto_tokens   || 0;
+    const mem   = d.est_memory_tokens      || 0;
+    const ledger= d.est_journal_tokens     || 0;
+    const ctx   = d.est_context_tokens     || 0;
+    const codex = d.est_codex_tokens       || 0;
+    const news  = d.est_news_tokens        || 0;
+    const reps  = d.est_reports_tokens      || 0;
+    const econ  = d.est_economy_tokens     || 0;
+    const oh    = d.est_overhead_tokens    || 0;
+    const res   = d.max_tokens             || 1024;
+    const lp    = d.last_prompt_tokens     || 0;
     const lc    = d.last_completion_tokens || 0;
-    const sw = v => Math.max(0, Math.min(100, v/win*100)).toFixed(1)+'%';
+    // Scale to the window, but never overflow the track: if the parts sum past the window
+    // (overhead under-estimates the real codex/press/etc. cost) divide by the actual total so
+    // the bar fills exactly and proportions hold. Slack below the window shows as empty track.
+    const total = sys + man + mem + ledger + ctx + codex + news + reps + econ + oh + res;
+    const denom = Math.max(win, total, 1);
+    const sw = v => Math.max(0, v / denom * 100).toFixed(1) + '%';
     document.getElementById('seg-sys').style.width     = sw(sys);
+    document.getElementById('seg-man').style.width     = sw(man);
     document.getElementById('seg-mem').style.width     = sw(mem);
+    document.getElementById('seg-ledger').style.width  = sw(ledger);
     document.getElementById('seg-ctx').style.width     = sw(ctx);
     document.getElementById('seg-codex').style.width   = sw(codex);
     document.getElementById('seg-news').style.width    = sw(news);
     document.getElementById('seg-reports').style.width = sw(reps);
+    document.getElementById('seg-econ').style.width    = sw(econ);
     document.getElementById('seg-oh').style.width      = sw(oh);
     document.getElementById('seg-res').style.width     = sw(res);
     document.getElementById('l-sys').textContent     = fmt(sys);
+    document.getElementById('l-man').textContent     = fmt(man);
     document.getElementById('l-mem').textContent     = fmt(mem);
+    document.getElementById('l-ledger').textContent  = fmt(ledger);
     document.getElementById('l-ctx').textContent     = fmt(ctx);
     document.getElementById('l-codex').textContent   = fmt(codex);
     document.getElementById('l-news').textContent    = fmt(news);
     document.getElementById('l-reports').textContent = fmt(reps);
+    document.getElementById('l-econ').textContent    = fmt(econ);
     document.getElementById('l-oh').textContent      = fmt(oh);
     document.getElementById('l-res').textContent     = fmt(res);
     document.getElementById('s-win').textContent    = fmt(win);
@@ -1167,6 +1392,23 @@ async function clearMemory() {
   if (!confirm('Clear all memory?')) return;
   await fetch('/memory', {method:'DELETE'});
   refreshMemory();
+}
+
+async function refreshManifesto() {
+  try {
+    const d = await fetch('/manifesto').then(r => r.json());
+    const el = document.getElementById('manifesto-box');
+    const turnEl = document.getElementById('man-turn');
+    if (!d.manifesto) {
+      el.innerHTML = '<span class="ph">Not drafted yet</span>';
+      turnEl.textContent = '';
+      return;
+    }
+    turnEl.textContent = d.turn ? `Turn ${d.turn}` : '';
+    const top = el.scrollTop;
+    el.innerHTML = esc(d.manifesto).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    el.scrollTop = top;
+  } catch {}
 }
 
 function toggleAsk(btn) {
@@ -1292,11 +1534,13 @@ async function masterRefresh() {
 // Initial load
 masterRefresh();
 refreshMemory();
+refreshManifesto();
 refreshActivity(); // if not included above
 
 // Poll everything in unison every 3 seconds
 setInterval(masterRefresh, 3000);
 setInterval(refreshMemory, 10000); // Memory can stay slower if it's heavy
+setInterval(refreshManifesto, 10000);
 setInterval(refreshActivity, 5000);
 </script>
 </body>

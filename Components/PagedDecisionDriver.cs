@@ -24,6 +24,7 @@ public class PagedDecisionDriver : MonoBehaviour
     // Multi-choice pending state
     private List<TemplateMultipleChoiceOption> _pendingMultiOptions;
     private bool _pendingMultiIsRadio;   // single-choice page (max == 1) — selecting must deselect the default
+    private Task<(List<int> indices, string reasoning)?> _aiMultiTask;   // checkbox page (max > 1)
 
     // Option labels for [CHOICE] context line
     private List<(int, string)> _pendingOptions;
@@ -51,6 +52,14 @@ public class PagedDecisionDriver : MonoBehaviour
         {
             if (!_aiTask.IsCompleted) { return; }
             ExecuteAIChoice();
+            return;
+        }
+
+        // Poll running multi-select AI task (checkbox page)
+        if (_aiMultiTask != null)
+        {
+            if (!_aiMultiTask.IsCompleted) { return; }
+            ExecuteAIMultiChoice();
             return;
         }
 
@@ -176,21 +185,30 @@ public class PagedDecisionDriver : MonoBehaviour
             options.Add((i, title));
         }
 
-        // Radio (single-choice) vs checkbox: MultipleChoicePageProperties.MaxChoices at +0x24
-        // (page.currentMultipleChoicePageData +0x98 → properties +0x38). max <= 1 ⇒ radio.
+        // Radio (single-choice) vs checkbox: MultipleChoicePageProperties at
+        // page.currentMultipleChoicePageData (+0x98) → properties (+0x38). MaximumChoiceCount at
+        // +0x24 (max <= 1 ⇒ radio), MinimumChoiceCount at +0x20.
         bool isRadio = true;
+        int minChoices = 1, maxChoices = 1;
         nint pageDataPtr = *(nint*)(page.Pointer + 0x98);
         if (pageDataPtr != 0)
         {
             nint propsPtr = *(nint*)(pageDataPtr + 0x38);
-            if (propsPtr != 0) { isRadio = *(int*)(propsPtr + 0x24) <= 1; }
+            if (propsPtr != 0)
+            {
+                minChoices = *(int*)(propsPtr + 0x20);
+                maxChoices = *(int*)(propsPtr + 0x24);
+                isRadio = maxChoices <= 1;
+            }
         }
 
         _pendingMultiOptions = optionRefs;
         _pendingMultiIsRadio = isRadio;
         _pendingCarousel = null;
 
-        Plugin.Log.LogInfo($"[PagedDecisionDriver] MultiChoice: \"{pageTitle}\" — {count} options ({(isRadio ? "radio" : "checkbox")})");
+        bool multiSelect = !isRadio && maxChoices > 1;
+        string kind = isRadio ? "radio" : (multiSelect ? $"checkbox, select {minChoices}-{maxChoices}" : "checkbox");
+        Plugin.Log.LogInfo($"[PagedDecisionDriver] MultiChoice: \"{pageTitle}\" — {count} options ({kind})");
         foreach (var (i, t) in options) { Plugin.Log.LogInfo($"  [{i}] {t}"); }
 
         if (!Plugin.UseAIServer.Value || count == 1)
@@ -205,7 +223,18 @@ public class PagedDecisionDriver : MonoBehaviour
         AIClient.AddContext("Policy decision", contextLabel);
         AIOverlay.ShowThinking();
         _pendingOptions = new List<(int, string)>(options);
-        _aiTask = Task.Run(() => AIClient.RequestDecision("paged_decision", _pendingOptions));
+
+        if (multiSelect)
+        {
+            // Checkbox page (e.g. emergency decrees): the AI picks a set within [min, max].
+            int min = Math.Max(0, minChoices);
+            int max = Math.Min(maxChoices, count);
+            _aiMultiTask = Task.Run(() => AIClient.RequestMultiDecision("paged_decision", _pendingOptions, min, max));
+        }
+        else
+        {
+            _aiTask = Task.Run(() => AIClient.RequestDecision("paged_decision", _pendingOptions));
+        }
     }
 
     private void ExecuteAIChoice()
@@ -238,6 +267,52 @@ public class PagedDecisionDriver : MonoBehaviour
         {
             int target = Math.Max(0, Math.Min(result.Value.index, _pendingMultiOptions.Count - 1));
             SelectMultiOption(target);
+        }
+
+        SetAdvanceTimer();
+    }
+
+    private void ExecuteAIMultiChoice()
+    {
+        var result = _aiMultiTask.Result;
+        _aiMultiTask = null;
+
+        if (result == null)
+        {
+            Plugin.Log.LogWarning("[PagedDecisionDriver] AI server unreachable — pausing.");
+            AIOverlay.ShowError("Cannot reach AI server.");
+            Plugin.AutomationEnabled = false;
+            Plugin.SafeStopPending = false;
+            return;
+        }
+
+        AIOverlay.ShowReasoning(result.Value.reasoning);
+
+        var indices = result.Value.indices ?? new List<int>();
+        if (_pendingOptions != null && indices.Count > 0)
+        {
+            var labels = new List<string>(indices.Count);
+            foreach (int i in indices)
+            {
+                if (i >= 0 && i < _pendingOptions.Count) { labels.Add(_pendingOptions[i].Item2); }
+            }
+            if (labels.Count > 0) { AIClient.AddContext("[CHOICE]", string.Join("; ", labels)); }
+        }
+
+        if (_pendingMultiOptions != null)
+        {
+            Plugin.Log.LogInfo($"[PagedDecisionDriver] MultiChoice → {indices.Count} option(s): [{string.Join(", ", indices)}].");
+            for (int i = 0; i < _pendingMultiOptions.Count; i++)
+            {
+                if (_pendingMultiOptions[i] != null) { _pendingMultiOptions[i].OnValueChanged(false); }
+            }
+            foreach (int t in indices)
+            {
+                if (t >= 0 && t < _pendingMultiOptions.Count && _pendingMultiOptions[t] != null)
+                {
+                    _pendingMultiOptions[t].OnValueChanged(true);
+                }
+            }
         }
 
         SetAdvanceTimer();
@@ -306,6 +381,7 @@ public class PagedDecisionDriver : MonoBehaviour
         _processedPage = -1;
         _readyToAdvance = false;
         _aiTask = null;
+        _aiMultiTask = null;
         _pendingCarousel = null;
         _pendingMultiOptions = null;
         _pendingOptions = null;

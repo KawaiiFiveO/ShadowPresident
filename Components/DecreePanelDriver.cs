@@ -57,6 +57,17 @@ public class DecreePanelDriver : MonoBehaviour
                 ExecuteOneTimeAIChoice();
                 break;
 
+            case DecreeState.OpeningDetails:
+                // Details page is open — sign it (auto-confirmed by ConfirmSkipPatches).
+                SignChosenOneTime();
+                break;
+
+            case DecreeState.Signing:
+                // Sign confirmed and slot consumed — loop back to ask about the next slot.
+                _state = DecreeState.Idle;
+                _nextActionTime = Time.time + 0.5f;
+                break;
+
             case DecreeState.Closing:
                 ResetState();
                 break;
@@ -164,18 +175,41 @@ public class DecreePanelDriver : MonoBehaviour
         int idx = result.Value.index;
         if (idx >= 0 && idx < _availableDecrees.Count)
         {
-            var chosen = _availableDecrees[idx];
-            Plugin.Log.LogInfo($"[DecreePanelDriver] OneTime: enacting {chosen.NameInDatabase}");
-            _oneTimePanel.EnactDecree(chosen.NameInDatabase);
-            _nextActionTime = Time.time + 0.5f;
-            // Reset to Idle so we loop back and ask again for the next slot.
-            _state = DecreeState.Idle;
+            // EnactDecree(name) pops its own "Are you sure?" confirm whose Yes callback depends on
+            // state set up inside EnactDecree's body, so ConfirmSkipPatches can't drive it and the
+            // popup is left hanging — the decree never enacts. Use the details-page sign flow
+            // instead (same machinery the reusable panel uses): open details, then OnSignClick(),
+            // which ConfirmSkipPatches auto-confirms (DecreeSign) → panel.OnSignConfirmed enacts.
+            _chosenDecree = _availableDecrees[idx];
+            Plugin.Log.LogInfo($"[DecreePanelDriver] OneTime: enacting {_chosenDecree.NameInDatabase} — opening details.");
+            _oneTimePanel.OnDecreeClick(_chosenDecree);
+            _state = DecreeState.OpeningDetails;
+            _nextActionTime = Time.time + 0.5f; // let the details page settle
         }
         else
         {
             Plugin.Log.LogInfo("[DecreePanelDriver] OneTime: AI is done enacting decrees.");
             FinishOneTimePanel();
         }
+    }
+
+    private unsafe void SignChosenOneTime()
+    {
+        // Details page lives at OneTimeDecreesPanel + 0x60 (decreeDetailsPage).
+        nint detailsPtr = *(nint*)(_oneTimePanel.Pointer + 0x60);
+        if (detailsPtr != 0)
+        {
+            Plugin.Log.LogInfo("[DecreePanelDriver] OneTime: signing via details page.");
+            new DecreeDetailsPage((IntPtr)detailsPtr).OnSignClick();
+            // ConfirmSkipPatches intercepts OnSignClick and auto-confirms the dialog,
+            // invoking DecreeDetailsPage.onSignConfirmed → OneTimeDecreesPanel.OnSignConfirmed.
+        }
+        else
+        {
+            Plugin.Log.LogWarning("[DecreePanelDriver] OneTime: details page null — cannot sign.");
+        }
+        _state = DecreeState.Signing;
+        _nextActionTime = Time.time + 0.5f;
     }
 
     private void FinishOneTimePanel()

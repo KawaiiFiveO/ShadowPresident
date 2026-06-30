@@ -134,8 +134,12 @@ public class PrologueEpilogueDriver : MonoBehaviour
         string text = ConversationLinePatch.StripTags(chosen.formattedText?.text ?? "");
         Plugin.Log.LogInfo($"[PrologueEpilogueDriver] Picking: {text}");
         AIOverlay.ShowReasoning(reasoning);
-        if (isRealChoice && !string.IsNullOrWhiteSpace(text))
-            AIClient.AddContext("[CHOICE]", text);
+        // Record both real AI picks ([CHOICE]) and forced single-option picks ([AUTO]) — same as
+        // DialogueDriver. Previously the [AUTO] case was dropped, so single-choice prologue lines
+        // never reached the context/transcript/JSONL. [AUTO] is context only; it doesn't trigger
+        // memory (the server keys memory off [CHOICE]).
+        if (!string.IsNullOrWhiteSpace(text))
+            AIClient.AddContext(isRealChoice ? "[CHOICE]" : "[AUTO]", text);
         _nextAdvanceTime = Time.time + 0.5f;
 
         if (_handler == null) { return; }
