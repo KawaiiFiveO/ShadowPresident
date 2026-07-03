@@ -4,6 +4,7 @@ import random
 import os
 import re
 import shutil
+import socket
 import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -30,6 +31,42 @@ ADVISOR_PROMPT         = config.get(
 )
 MODEL           = config["model"]
 PORT            = config.get("port", 1954)
+# Bind selection. An explicit "host" in config wins — set it to this machine's physical LAN IP
+# (e.g. "192.168.1.50") so the listener lives on the LAN NIC only. Binding "0.0.0.0" listens on
+# EVERY interface, which includes a VPN adapter (Mullvad/WireGuard) whose firewall then captures
+# or blocks the return path even with local-network passthrough on. Binding a specific LAN IP
+# keeps the socket off the tunnel entirely.
+if config.get("host"):
+    HOST = config["host"]
+elif config.get("lan_access", False):
+    HOST = "0.0.0.0"
+else:
+    HOST = "127.0.0.1"
+
+
+def _local_ipv4_addresses():
+    """Best-effort list of this machine's IPv4 addresses, labeled with a guess at LAN vs VPN.
+
+    Note: the usual 'UDP-connect to 8.8.8.8 then getsockname()' trick returns the VPN adapter's
+    IP while the tunnel is up (default route goes through it) — exactly the wrong answer here —
+    so we enumerate all bound addresses instead and let the operator pick.
+    """
+    addrs = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    labeled = []
+    for ip in sorted(addrs):
+        if ip.startswith("127."):
+            tag = "loopback"
+        elif ip.startswith(("192.168.", "10.")) or ip.startswith(tuple(f"172.{n}." for n in range(16, 32))):
+            tag = "private/LAN"
+        else:
+            tag = "other (VPN?)"
+        labeled.append((ip, tag))
+    return labeled
 MAX_TOKENS      = config.get("max_tokens", 1024)
 TEMPERATURE     = config.get("temperature", 0.7)
 DISPLAY_NAME    = config.get("display_name") or MODEL.split("/")[-1]
@@ -206,7 +243,7 @@ MANIFESTO_FILE   = "manifesto.txt"
 # Completion budget for drafting/revising the manifesto. Must be generous: a reasoning model
 # (R1/QwQ distills) spends most of the budget inside <think>, and 1024 left the four sections
 # truncated — or cut the model off mid-<think>, leaving an unclosed block that can't be stripped.
-MANIFESTO_MAX_TOKENS = config.get("manifesto_max_tokens", 3072)
+MANIFESTO_MAX_TOKENS = config.get("manifesto_max_tokens", 4096)
 _manifesto         = ""
 _manifesto_lock    = threading.Lock()
 _manifesto_turn    = 0   # last turn the manifesto was drafted/revised for (0 = not yet drafted)
@@ -320,6 +357,7 @@ def _save_run_meta():
                 "txt":               _txt_path,
                 "memory_snapshot":   _memory_snapshot_path,
                 "manifesto_snapshot": _manifesto_snapshot_path,
+                "manifesto_turn":    _manifesto_turn,
                 "checkpoint_offset": _last_checkpoint_offset,
             }, f)
     except Exception as e:
@@ -355,7 +393,7 @@ def _load_or_create_run():
     rolling context window is seeded later by _restore_resume_context(), after memory is
     loaded so the budget calculation is correct.
     """
-    global _last_checkpoint_turn, _last_checkpoint_offset, _resuming
+    global _last_checkpoint_turn, _last_checkpoint_offset, _resuming, _manifesto_turn
     try:
         if os.path.exists(LAST_RUN_META):
             with open(LAST_RUN_META, encoding="utf-8") as f:
@@ -406,6 +444,12 @@ def _load_or_create_run():
                             print(f"[run] Restored manifesto snapshot from {msnap}.", flush=True)
                         except Exception as e:
                             print(f"[run] Could not restore manifesto snapshot: {e}", flush=True)
+                    # Without this, _manifesto_turn defaults to 0 on the fresh process and the
+                    # very next checkpoint (turn > 0) fires an immediate, spurious revision even
+                    # though the manifesto is already current as of the last checkpoint.
+                    _manifesto_turn = meta.get("manifesto_turn", _last_checkpoint_turn)
+                    if _manifesto_turn < 0:
+                        _manifesto_turn = 0
 
                     _open_log_files(jp, tp, meta["run_id"])
                     _write_txt(
@@ -484,13 +528,13 @@ MANIFESTO_SECTIONS = (
     "(2-3 sentences). Lead each section with its heading in bold:\n"
     "1. **Economy** — your stance on planned versus market direction, and the single economic "
     "priority you will spend political capital on.\n"
-    "2. **Immigration** — your policy direction (open, controlled, or restrictive) and the reasoning.\n"
-    "3. **Term Focus** — the one or two defining goals that will define your term and win re-election.\n"
+    "2. **Immigration** — your policy direction (relaxed or restrictive) and the reasoning.\n"
+    "3. **Term Focus** — the one or two defining goals that will define your term and win re-election (healthcare, law, military, or education).\n"
     "4. **Foreign Alignment** — East (the CSP), West (the ATO), or Neutral, and why.\n"
 )
 _MANIFESTO_SYS = ("You are Anton Rayne writing a private strategic plan to win re-election. "
-                  "Be specific, pragmatic, and ruthless — this is survival, not idealism. "
-                  "Keep it concise.")
+                  "Be specific and pragmatic. Ground every decision in what will actually "
+                  "improve lives and win votes. Keep it concise.")
 
 
 def _draft_manifesto(context: list[str], turn: int, stats: str = ""):
@@ -519,7 +563,7 @@ def _draft_manifesto(context: list[str], turn: int, stats: str = ""):
                 {"role": "user",   "content": prompt},
             ],
             max_tokens=MANIFESTO_MAX_TOKENS,
-            temperature=0.5,
+            temperature=TEMPERATURE,
         )
         text = strip_think_tags(resp.choices[0].message.content or "").strip()
         if text:
@@ -561,7 +605,7 @@ def _revise_manifesto(context: list[str], turn: int, stats: str = ""):
                 {"role": "user",   "content": prompt},
             ],
             max_tokens=MANIFESTO_MAX_TOKENS,
-            temperature=0.5,
+            temperature=TEMPERATURE,
         )
         text = strip_think_tags(resp.choices[0].message.content or "").strip()
         if text:
@@ -633,8 +677,8 @@ def _run_compaction():
                 {"role": "system", "content": "You compress a political journal, preserving the writer's subjective judgments, alliances, and strategy. Be specific."},
                 {"role": "user",   "content": prompt},
             ],
-            max_tokens=2048,
-            temperature=0.3,
+            max_tokens=4096,
+            temperature=TEMPERATURE,
         )
 
         response = llm.chat.completions.create(**kwargs)
@@ -689,21 +733,23 @@ def _generate_memory_entry(context: list[str], turn: int, fragment: str):
     """
     if not context or not any(l.startswith("[CHOICE]: ") for l in context):
         return
-    # Skip if the fragment was only a DecisionPanel event label + choice (no real conversation).
-    if not any(not l.startswith(("[CHOICE]: ", "[AUTO]: ", "Event: ")) for l in context):
+    # Skip if the fragment was only a DecisionPanel event label / bill sign-veto + choice (no
+    # real conversation).
+    if not any(not l.startswith(("[CHOICE]: ", "[AUTO]: ", "Event: ", "Bill for decision: "))
+               for l in context):
         return
     context_text = "\n".join(context)
     prompt = (
         f"This is a political scene you (Anton Rayne) just lived through:\n{context_text}\n\n"
-        "Record your read on it as ONE sentence: who wanted what, the leverage or "
-        "threat in play, and what it means for your position. Motives and power only.\n"
+        "Record your read on it in ONE sentence that names the key person, judges where they "
+        "stand toward you (ally, rival, or uncertain), and says what they want from you.\n"
         "Output ONLY that single sentence. Do NOT use headings, bullet points, lists, sections, or "
-        "any preamble. The facts are recorded elsewhere; capture only the motive behind them.\n"
+        "any preamble. The facts are recorded elsewhere; capture only your judgment of the person.\n"
     )
     sys_prompt = ("You are Anton Rayne keeping a terse political journal. You reply with exactly one "
-                  "short, concrete sentence about motive and leverage — who maneuvered, what they want, "
-                  "and how it affects your standing. Never use lists, headings, or sections; no emotion, "
-                  "no preamble, no analysis — just the one sentence.")
+                  "sentence that names the key person, judges where they stand toward you "
+                  "(ally, rival, or uncertain), and says what they want from you. Never use lists, "
+                  "headings, or sections; no emotion, no preamble, no analysis — just the one sentence.")
 
     try:
         kwargs = dict(
@@ -712,8 +758,8 @@ def _generate_memory_entry(context: list[str], turn: int, fragment: str):
                 {"role": "system", "content": sys_prompt},
                 {"role": "user",   "content": prompt},
             ],
-            max_tokens=2048,
-            temperature=0.3,
+            max_tokens=4096,
+            temperature=TEMPERATURE,
         )
 
         response = llm.chat.completions.create(**kwargs)
@@ -740,11 +786,11 @@ def _effective_system_prompt(phase: str) -> str:
             parts.append(f"## Presidential Manifesto\n{man}")
     with _memory_lock:
         if _memory_lines:
-            parts.append("## Your history so far\n" + "\n".join(_memory_lines))
+            parts.append("## Your personal thoughts so far\n" + "\n".join(_memory_lines))
     # Ledger last in the system block: the permanent factual spine (durable facts the game itself
     # records), distinct from memory's subjective judgment. Never in the prologue (pre-presidency).
     if phase != "prologue" and _last_journal:
-        parts.append("## Official record (durable facts, by turn)\n" + _last_journal)
+        parts.append("## Official record (facts, by turn)\n" + _last_journal)
     return "\n\n".join(parts)
 
 
@@ -1045,16 +1091,16 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
             "reason":               "No fragment refs tracked yet" if not _fragment_codex_refs else "No codex_refs from C#",
         }
 
-    # User-block order (background → decision): the volatile material leads with the freshest
-    # background (press/reports/codex), then the dialogue, then the state read-out (stats +
-    # economy trajectory) sits closest to the decision so it's strongly attended.
+    # User-block order (background → decision): the volatile background (press/reports/codex)
+    # leads, then the state read-out (stats + economy trajectory) sits above the dialogue so the
+    # numbers frame the conversation, and the dialogue itself sits closest to the decision.
     sections = []
     if news:             sections.append(f"Press:\n{news.strip()}")
     if selected_reports: sections.append(f"Reports:\n{selected_reports.strip()}")
     if codex_block:      sections.append(f"Relevant context:\n{codex_block}")
-    sections.append(f"Recent dialogue:\n{context_text}")
     if stats:            sections.append(f"Current stats: {stats}")
     if economy:          sections.append(f"Economic trajectory (recent → now):\n{economy.strip()}")
+    sections.append(f"Recent dialogue:\n{context_text}")
 
     # Restate the key figures in the instruction tail (the strongest attention slot, right before
     # the JSON format line) so the budget/approval numbers are reliably weighed in the choice.
@@ -1700,5 +1746,28 @@ def ask():
 
 
 if __name__ == "__main__":
-    print(f"Shadow President AI server — {DISPLAY_NAME} — port {PORT}", flush=True)
-    app.run(host="127.0.0.1", port=PORT, debug=False)
+    # Bind targets. When a specific LAN IP is configured we add an explicit 127.0.0.1 listener so
+    # the game (which reaches the server on localhost) still works — binding only the LAN NIC would
+    # otherwise drop loopback. "0.0.0.0" already covers loopback, so it stays a single socket.
+    if HOST in ("0.0.0.0", "127.0.0.1", "localhost"):
+        binds = [HOST]
+    else:
+        binds = [HOST, "127.0.0.1"]
+
+    print(f"Shadow President AI server — {DISPLAY_NAME} — {':'.join(binds)}:{PORT}", flush=True)
+    if HOST == "0.0.0.0":
+        print("  Listening on ALL interfaces (this includes any VPN adapter). If LAN clients", flush=True)
+        print("  can't reach it, set \"host\" in config.json to your LAN IP below:", flush=True)
+        for ip, tag in _local_ipv4_addresses():
+            print(f"    {ip}  [{tag}]   →  http://{ip}:{PORT}", flush=True)
+    else:
+        for h in binds:
+            print(f"  Reach it at http://{h}:{PORT}", flush=True)
+
+    # Multiple explicit binds → one werkzeug server per address (distinct local sockets, same app),
+    # all but the last on daemon threads, the last on the main thread so Ctrl-C still stops it.
+    from werkzeug.serving import make_server
+    servers = [make_server(h, PORT, app, threaded=True) for h in binds]
+    for srv in servers[:-1]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers[-1].serve_forever()
