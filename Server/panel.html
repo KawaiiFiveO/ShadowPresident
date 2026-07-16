@@ -635,8 +635,34 @@ textarea:focus { border-color: var(--gold-dim); }
 /* Dim placeholder */
 .ph { color: var(--text-mute); font-size: 12px; font-style: italic; }
 </style>
+<style>
+/* Read-only remote view (served through the Cloudflare tunnel). The server tags the
+   body element with class "readonly" for internet traffic; hide every control action. */
+body.readonly .mast-btn.danger,   /* Quit */
+body.readonly .clear-btn,         /* Clear journal */
+body.readonly #ask-row {          /* Ask the AI box */
+  display: none !important;
+}
+
+/* Server uptime + next-refresh countdown, shown once loaded. */
+#uptime, #next-refresh { font-size: 10px; color: var(--text-mute); white-space: nowrap; flex: 0 0 auto; }
+
+/* Connection-lost toast — fixed at the bottom so it's visible regardless of scroll.
+   The page keeps its last-loaded data and stays browsable while offline. */
+#conn-banner {
+  display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000;
+  background: #5a2410; color: #ffd9c2; text-align: center;
+  font: 500 12px/1.4 'Source Code Pro', monospace; padding: 6px 10px;
+  box-shadow: 0 -2px 8px rgba(0,0,0,.45);
+}
+body.offline #conn-banner { display: block; }
+body.offline #dot { color: #c2453c !important; }   /* red dot while disconnected */
+</style>
 </head>
 <body>
+
+<!-- Connection-lost toast (shown when polling fails; page stays browsable) -->
+<div id="conn-banner"></div>
 
 <!-- Raw prompt modal -->
 <div id="prompt-modal" onclick="if(event.target===this)this.style.display='none'">
@@ -656,6 +682,8 @@ textarea:focus { border-color: var(--gold-dim); }
 <div id="masthead">
   <h1>Shadow President <span class="dot" id="dot">●</span></h1>
   <div id="status">Connecting…</div>
+  <span id="next-refresh" title="Time until the next context refresh"></span>
+  <span id="uptime" title="Server uptime"></span>
   <div id="turn-chip" title="">
     <span class="tc-label">Turn</span>
     <span class="tc-num" id="turn-num">—</span>
@@ -1320,7 +1348,8 @@ async function refresh() {
     const dot = document.getElementById('dot');
     dot.style.color = '#5a9a5a';
     setTimeout(() => dot.style.color = 'var(--text-mute)', 500);
-  } catch { document.getElementById('status').textContent = 'Server unreachable'; }
+    markOnline();
+  } catch { markOffline(); }
 }
 
 async function refreshDecisions() {
@@ -1400,6 +1429,12 @@ async function refreshManifesto() {
     const d = await fetch('/manifesto').then(r => r.json());
     const el = document.getElementById('manifesto-box');
     const turnEl = document.getElementById('man-turn');
+    if (d.enabled === false) {
+      el.innerHTML = '<span class="ph">Manifesto is currently disabled…</span>';
+      turnEl.textContent = '';
+      if (_manifestoTimer) { clearInterval(_manifestoTimer); _manifestoTimer = null; }  // one-shot
+      return;
+    }
     if (!d.manifesto) {
       el.innerHTML = '<span class="ph">Not drafted yet</span>';
       turnEl.textContent = '';
@@ -1522,8 +1557,69 @@ document.getElementById('q').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ask(); }
 });
 
+// ── Connection status + uptime ──────────────────────────────────────────────
+// The page only rewrites its panels on a successful fetch, so when the server drops
+// the last-loaded data stays on screen and browsable — we just flag it and show how
+// stale it is. Uptime is read once on load (and again on reconnect, since the server
+// may have restarted) and ticked locally between reads.
+let _lastOk     = 0;      // ms timestamp of the last successful /context poll
+let _uptimeBase = null;   // server uptime (s) reported at _uptimeAt
+let _uptimeAt   = 0;
+let _lastMasterFire = Date.now();   // ms the masterRefresh interval last fired
+let _manifestoTimer = null;         // manifesto poll interval; cleared once if disabled
+
+function markOnline() {
+  _lastOk = Date.now();
+  if (document.body.classList.contains('offline')) {
+    document.body.classList.remove('offline');
+    fetchUptime();        // reconnected — server may be a fresh process
+  }
+}
+function markOffline() { document.body.classList.add('offline'); }
+
+function fmtDur(s) {
+  s = Math.max(0, Math.floor(s));
+  const d = Math.floor(s / 86400); s %= 86400;
+  const h = Math.floor(s / 3600);  s %= 3600;
+  const m = Math.floor(s / 60);    const sec = s % 60;
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+async function fetchUptime() {
+  try {
+    const h = await fetch('/health').then(r => r.json());
+    if (h && h.uptime_seconds != null) { _uptimeBase = h.uptime_seconds; _uptimeAt = Date.now(); }
+  } catch {}
+}
+
+function tickStatus() {
+  const offline = document.body.classList.contains('offline');
+  const up = document.getElementById('uptime');
+  const nr = document.getElementById('next-refresh');
+  if (offline) {
+    up.textContent = '';
+    nr.textContent = '';
+    const ago = _lastOk ? fmtDur((Date.now() - _lastOk) / 1000) + ' ago' : 'moments ago';
+    document.getElementById('conn-banner').textContent =
+      `⚠ Connection lost — showing last data from ${ago}. Retrying…`;
+    return;
+  }
+  if (_uptimeBase != null) {
+    up.textContent = 'up ' + fmtDur(_uptimeBase + (Date.now() - _uptimeAt) / 1000);
+  }
+  const left = Math.max(0, MASTER_INTERVAL - (Date.now() - _lastMasterFire)) / 1000;
+  nr.textContent = 'next ' + Math.ceil(left) + 's';
+}
+
+fetchUptime();
+setInterval(tickStatus, 1000);
+
 // Remove all the individual setIntervals and use one master loop
 async function masterRefresh() {
+  _lastMasterFire = Date.now();   // drives the "next refresh" countdown
   // Promise.all runs both fetches at the exact same time
   await Promise.all([
     refresh(),
@@ -1538,11 +1634,14 @@ refreshMemory();
 refreshManifesto();
 refreshActivity(); // if not included above
 
-// Poll everything in unison every 3 seconds
-setInterval(masterRefresh, 3000);
-setInterval(refreshMemory, 10000); // Memory can stay slower if it's heavy
-setInterval(refreshManifesto, 10000);
-setInterval(refreshActivity, 5000);
+// Polling cadence. Local view runs at full speed (scale 1). For the remote tunnel
+// view the server injects window.POLL_SCALE (config: remote_poll_scale) to slow it.
+const POLL_SCALE = window.POLL_SCALE || 1;
+const MASTER_INTERVAL = 3000 * POLL_SCALE;  // context + decisions — the primary heartbeat
+setInterval(masterRefresh,   MASTER_INTERVAL);
+setInterval(refreshActivity, 5000  * POLL_SCALE);
+setInterval(refreshMemory,   10000 * POLL_SCALE);  // heavier, already slower
+_manifestoTimer = setInterval(refreshManifesto, 10000 * POLL_SCALE);
 </script>
 </body>
 </html>

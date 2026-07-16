@@ -117,10 +117,14 @@ internal static class AIClient
         while (_codexIds.Count > MaxRecentCodexIds) { _codexIds.Dequeue(); }
     }
 
+    // `question` is the prompt the panel is actually asking right now (empty for decision types
+    // whose question is already the tail of the dialogue). It is sent as its own field rather than
+    // pushed onto the rolling context: the server renders it in the instruction slot above the
+    // choices, so the context stays a log of *settled* exchanges. See PagedDecisionDriver.
     internal static (int index, string reasoning)? RequestDecision(
-        string type, List<(int index, string text)> choices)
+        string type, List<(int index, string text)> choices, string question = "")
     {
-        var raw = PostDecision(type, choices, "",
+        var raw = PostDecision(type, choices, "", question,
             body => Regex.IsMatch(body, "\"choice_index\"\\s*:\\s*\\d+"));
         if (string.IsNullOrEmpty(raw)) { return null; }
 
@@ -137,10 +141,11 @@ internal static class AIClient
     // indices ("choice_indices"); minSelect/maxSelect are the page's Minimum/MaximumChoiceCount and
     // the server clamps the set into that range (padding up to the minimum) before replying.
     internal static (List<int> indices, string reasoning)? RequestMultiDecision(
-        string type, List<(int index, string text)> choices, int minSelect, int maxSelect)
+        string type, List<(int index, string text)> choices, int minSelect, int maxSelect,
+        string question = "")
     {
         var extra = $"\"min_select\":{minSelect},\"max_select\":{maxSelect},";
-        var raw = PostDecision(type, choices, extra,
+        var raw = PostDecision(type, choices, extra, question,
             body => Regex.IsMatch(body, "\"choice_indices\"\\s*:\\s*\\["));
         if (string.IsNullOrEmpty(raw)) { return null; }
 
@@ -168,7 +173,7 @@ internal static class AIClient
     // trailing comma, or be empty). `isComplete` decides whether a 2xx body actually carries a
     // usable answer — if not, it's treated like a malformed completion and retried.
     private static string PostDecision(
-        string type, List<(int index, string text)> choices, string extraFields,
+        string type, List<(int index, string text)> choices, string extraFields, string question,
         Func<string, bool> isComplete)
     {
         var url = Plugin.AIServerUrl.Value.TrimEnd('/') + "/decision";
@@ -191,6 +196,7 @@ internal static class AIClient
                    $"\"phase\":\"{CurrentPhase}\"," +
                    $"\"turn\":{CurrentTurn},\"step\":{CurrentStep}," +
                    $"\"fragment\":\"{EscapeJson(CurrentFragment)}\"," +
+                   $"\"question\":\"{EscapeJson(question)}\"," +
                    $"\"stats\":{statsJson}," +
                    $"\"news\":{newsJson}," +
                    $"\"reports\":{reportsJson}," +

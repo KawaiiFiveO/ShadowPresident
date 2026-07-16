@@ -160,10 +160,10 @@ public class GameStateReader : MonoBehaviour
             if (propsPtr == 0) { continue; }
             if (*(int*)(propsPtr + 0x10) != currentTurn) { continue; }  // TurnNo
 
-            string title = ReadIl2CppString(propsPtr + 0x20);  // Title
+            string title = Flatten(ReadIl2CppString(propsPtr + 0x20));  // Title
             if (string.IsNullOrWhiteSpace(title)) { continue; }
 
-            string desc  = TruncateAtSentence(ReadIl2CppString(propsPtr + 0x28), ArticleMaxChars);  // Description
+            string desc  = TruncateAtSentence(Flatten(ReadIl2CppString(propsPtr + 0x28)), ArticleMaxChars);  // Description
             string paper = ReadIl2CppString(propsPtr + 0x30);  // Newspaper (NameInDatabase)
             int    idx   = *(int*)(propsPtr + 0x38);            // Index
 
@@ -234,10 +234,10 @@ public class GameStateReader : MonoBehaviour
             nint propsPtr = *(nint*)(report.Pointer + 0x38);
             if (propsPtr == 0) { continue; }
 
-            string title = ReadIl2CppString(propsPtr + 0x20);
+            string title = Flatten(ReadIl2CppString(propsPtr + 0x20));
             if (string.IsNullOrWhiteSpace(title)) { continue; }
 
-            string desc = TruncateAtSentence(ReadIl2CppString(propsPtr + 0x28), ReportMaxChars);
+            string desc = TruncateAtSentence(Flatten(ReadIl2CppString(propsPtr + 0x28)), ReportMaxChars);
 
             // Track for deferred dismissal at checkpoint boundary (avoid duplicates).
             if (!_pendingDismissal.Contains(report)) { _pendingDismissal.Add(report); }
@@ -272,6 +272,32 @@ public class GameStateReader : MonoBehaviour
         }
         _pendingDismissal.Clear();
         Plugin.Log.LogInfo("[GameStateReader] Dismissed buffered reports at checkpoint.");
+    }
+
+    // Articles and reports are serialized one-per-line and the server splits on '\n' to window
+    // them, so an embedded newline in the game's text would split one record into a header line
+    // plus headerless fragments. Collapse all whitespace runs to single spaces.
+    private static string Flatten(string text)
+    {
+        if (string.IsNullOrEmpty(text)) { return text; }
+
+        var sb = new System.Text.StringBuilder(text.Length);
+        bool prevWasSpace = false;
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (char.IsWhiteSpace(c))
+            {
+                if (!prevWasSpace && sb.Length > 0) { sb.Append(' '); }
+                prevWasSpace = true;
+            }
+            else
+            {
+                sb.Append(c);
+                prevWasSpace = false;
+            }
+        }
+        return sb.ToString().TrimEnd();
     }
 
     private static string TruncateAtSentence(string text, int maxChars)

@@ -31,6 +31,11 @@ ADVISOR_PROMPT         = config.get(
 )
 MODEL           = config["model"]
 PORT            = config.get("port", 1954)
+# Master switch for the Cloudflare tunnel view. True (default) → internet traffic gets the
+# read-only panel; False → the tunnel is refused entirely and the server is local-only.
+ALLOW_REMOTE_VIEW = config.get("allow_remote_view", True)
+# How much slower the remote (tunnel) panel polls vs. the local view. 1 = same as local.
+REMOTE_POLL_SCALE = config.get("remote_poll_scale", 4)
 # Bind selection. An explicit "host" in config wins — set it to this machine's physical LAN IP
 # (e.g. "192.168.1.50") so the listener lives on the LAN NIC only. Binding "0.0.0.0" listens on
 # EVERY interface, which includes a VPN adapter (Mullvad/WireGuard) whose firewall then captures
@@ -71,6 +76,9 @@ MAX_TOKENS      = config.get("max_tokens", 1024)
 TEMPERATURE     = config.get("temperature", 0.7)
 DISPLAY_NAME    = config.get("display_name") or MODEL.split("/")[-1]
 ENABLE_THINKING     = config.get("enable_thinking", False)
+# When the model returns a reply we can't extract a choice from (no JSON, no bare number), re-query
+# the LLM up to this many extra times before giving up and falling back to the default choice.
+PARSE_RETRIES       = config.get("parse_retries", 2)
 # The model's full context window (n_ctx in LM Studio). The dialogue-context budget is derived
 # from this minus the system prompt, injected memory, the completion reservation (max_tokens), and
 # a small overhead for choices/stats/codex/formatting — so we actually fill the window instead of
@@ -205,13 +213,13 @@ _last_reports_debug: dict        = {}  # {selected: [...], all: [...]} from last
 _last_raw_request:   dict        = {}  # full kwargs sent to LM Studio in last decision call
 
 # Recent AI decisions for the reasoning log (ring buffer, AI only — no human entries)
-MAX_RECENT_DECISIONS = 50
+MAX_RECENT_DECISIONS = 100
 _recent_decisions: list[dict] = []
 
 # Activity feed — recent server events (decisions, checkpoints, memory writes, codex caching)
 _activity_log: list[dict] = []
 _activity_lock = threading.Lock()
-MAX_ACTIVITY   = 30
+MAX_ACTIVITY   = 50
 
 # Per-fragment codex relevance tracking — articy_id → ref count since last checkpoint.
 # Reset at /checkpoint so injection priority reflects the current conversation.
@@ -229,8 +237,8 @@ _last_codex_tokens = 0
 # KEEP_RECENT tokens verbatim. Target ~3k tokens (~7% of the 40k window) — bigger isn't better
 # (lost-in-the-middle + small-model drift); the extra window goes to dialogue context + ledger.
 MEMORY_FILE               = "memory.txt"
-MEMORY_TOKEN_CEILING      = 3000   # compact when estimated memory tokens exceed this
-MEMORY_KEEP_RECENT_TOKENS = 1800   # keep this many recent tokens verbatim through a compaction
+MEMORY_TOKEN_CEILING      = 6000   # compact when estimated memory tokens exceed this
+MEMORY_KEEP_RECENT_TOKENS = 3200   # keep this many recent tokens verbatim through a compaction
 MEMORY_HARD_LINE_CAP      = 200    # absolute FIFO backstop if compaction can't run (LLM down)
 _memory_lines: list[str] = []
 _memory_lock = threading.Lock()
@@ -240,6 +248,9 @@ _compacting  = False
 # boundary (first phase=main decision) and revised once per turn at checkpoints. Injected
 # into the main system prompt between the persona/rules and memory (volatility ordering).
 MANIFESTO_FILE   = "manifesto.txt"
+# Master switch. False → the AI never drafts or revises a manifesto, nothing is injected into
+# the prompt, and no manifesto file is read, written, or snapshotted.
+MANIFESTO_ENABLED = config.get("enable_manifesto", True)
 # Completion budget for drafting/revising the manifesto. Must be generous: a reasoning model
 # (R1/QwQ distills) spends most of the budget inside <think>, and 1024 left the four sections
 # truncated — or cut the model off mid-<think>, leaving an unclosed block that can't be stripped.
@@ -438,7 +449,7 @@ def _load_or_create_run():
                             print(f"[run] Could not restore memory snapshot: {e}", flush=True)
 
                     msnap = meta.get("manifesto_snapshot", "")
-                    if msnap and os.path.exists(msnap):
+                    if MANIFESTO_ENABLED and msnap and os.path.exists(msnap):
                         try:
                             shutil.copyfile(msnap, MANIFESTO_FILE)
                             print(f"[run] Restored manifesto snapshot from {msnap}.", flush=True)
@@ -491,6 +502,8 @@ def _save_memory():
 
 def _load_manifesto():
     global _manifesto
+    if not MANIFESTO_ENABLED:
+        return
     if os.path.exists(MANIFESTO_FILE):
         try:
             with open(MANIFESTO_FILE, encoding="utf-8") as f:
@@ -502,6 +515,8 @@ def _load_manifesto():
 
 
 def _save_manifesto():
+    if not MANIFESTO_ENABLED:
+        return
     try:
         with open(MANIFESTO_FILE, "w", encoding="utf-8") as f:
             f.write(_manifesto)
@@ -511,7 +526,7 @@ def _save_manifesto():
 
 def _snapshot_manifesto():
     """Copy the live manifesto to the per-run snapshot used for resume restoration."""
-    if not _manifesto_snapshot_path:
+    if not MANIFESTO_ENABLED or not _manifesto_snapshot_path:
         return
     try:
         with _manifesto_lock:
@@ -532,9 +547,8 @@ MANIFESTO_SECTIONS = (
     "3. **Term Focus** — the one or two defining goals that will define your term and win re-election (healthcare, law, military, or education).\n"
     "4. **Foreign Alignment** — East (the CSP), West (the ATO), or Neutral, and why.\n"
 )
-_MANIFESTO_SYS = ("You are Anton Rayne writing a private strategic plan to win re-election. "
-                  "Be specific and pragmatic. Ground every decision in what will actually "
-                  "improve lives and win votes. Keep it concise.")
+
+_MANIFESTO_SYS = ("You are Anton Rayne writing a private strategic plan for your presidential term.")
 
 
 def _draft_manifesto(context: list[str], turn: int, stats: str = ""):
@@ -548,12 +562,11 @@ def _draft_manifesto(context: list[str], turn: int, stats: str = ""):
     prompt = (
         "You are Anton Rayne, about to begin your first presidential term. Before the work "
         "begins, set down your Presidential Manifesto: the priorities and strategy you will "
-        "pursue to win re-election.\n\n"
+        "pursue to improve the country and win re-election.\n\n"
         f"What you have experienced so far:\n{ctx}\n\n"
         + (f"Current state of the country:\n{stats}\n\n" if stats else "")
         + MANIFESTO_SECTIONS
-        + "\nGround every section in Sordland's limited budget and the competing factions. "
-        "No preamble; just the four headed sections."
+        + "No preamble; just the four headed sections."
     )
     try:
         resp = llm.chat.completions.create(
@@ -591,8 +604,8 @@ def _revise_manifesto(context: list[str], turn: int, stats: str = ""):
         f"Your current Presidential Manifesto:\n{current}\n\n"
         f"Events since you last reviewed it (now Turn {turn}):\n{ctx or '(no notable new dialogue)'}\n\n"
         + (f"Current state of the country:\n{stats}\n\n" if stats else "")
-        + "Revise your manifesto to maximize your chances of re-election from here. Keep the same "
-        "four sections; drop what is done or dead and sharpen what now matters most. If you abandon "
+        + "Based on the events so far, you may revise your Presidential Manifesto to continue improving the country. Keep the same "
+        "four sections. If you abandon "
         "a prior position, add one short clause on why.\n\n"
         + MANIFESTO_SECTIONS
         + "\nNo preamble; just the four headed sections."
@@ -666,9 +679,8 @@ def _run_compaction():
         print(f"[memory] Compacting {len(to_compact)} old entries…", flush=True)
         text    = "\n".join(to_compact)
         prompt  = (
-            f"These are entries from Anton Rayne's private political journal:\n{text}\n\n"
-            "Compress them into 5–8 concise bullets that preserve his key judgments — his read on "
-            "allies and rivals, alliances and grudges, leverage, and strategy — not merely the events. "
+            f"These are entries from Anton Rayne's private journal:\n{text}\n\n"
+            "Compress them into 5–8 concise bullets that preserve his key thoughts. "
             "One sentence each. Start every bullet with '•'."
         )
         kwargs = dict(
@@ -740,16 +752,13 @@ def _generate_memory_entry(context: list[str], turn: int, fragment: str):
         return
     context_text = "\n".join(context)
     prompt = (
-        f"This is a political scene you (Anton Rayne) just lived through:\n{context_text}\n\n"
-        "Record your read on it in ONE sentence that names the key person, judges where they "
-        "stand toward you (ally, rival, or uncertain), and says what they want from you.\n"
-        "Output ONLY that single sentence. Do NOT use headings, bullet points, lists, sections, or "
-        "any preamble. The facts are recorded elsewhere; capture only your judgment of the person.\n"
+        f"This is a transcript of a political scene:\n{context_text}\n\n"
+        "Write a brief factual summary (1-3 sentences) of what happened and what decisions were made.\n"
+        "Do NOT use headings, bullet points, lists, sections, or "
+        "any preamble.\n"
     )
-    sys_prompt = ("You are Anton Rayne keeping a terse political journal. You reply with exactly one "
-                  "sentence that names the key person, judges where they stand toward you "
-                  "(ally, rival, or uncertain), and says what they want from you. Never use lists, "
-                  "headings, or sections; no emotion, no preamble, no analysis — just the one sentence.")
+    sys_prompt = ("You write factual log entries based on transcripts of events. Report only what happened. "
+                  "Never use lists, headings, or sections.")
 
     try:
         kwargs = dict(
@@ -766,7 +775,7 @@ def _generate_memory_entry(context: list[str], turn: int, fragment: str):
         raw = strip_think_tags(response.choices[0].message.content or "").strip().strip('"')
         # Hard brevity guard: a verbose model still gets clipped to one sentence so the journal
         # can't bloat regardless of how the model ignores the instruction.
-        raw = _first_sentence(raw)
+        #raw = _first_sentence(raw)
         if raw:
             _append_memory(f"[Turn {turn}] {raw}")
             _log_activity("memory", desc=f"[Turn {turn}] {raw[:80]}")
@@ -779,18 +788,18 @@ def _effective_system_prompt(phase: str) -> str:
     parts = [base]
     # Manifesto sits between the persona/rules and memory (volatility ordering). Never in the
     # prologue — it doesn't exist yet and the prologue is pre-presidency.
-    if phase != "prologue":
+    if MANIFESTO_ENABLED and phase != "prologue":
         with _manifesto_lock:
             man = _manifesto
         if man:
             parts.append(f"## Presidential Manifesto\n{man}")
     with _memory_lock:
         if _memory_lines:
-            parts.append("## Your personal thoughts so far\n" + "\n".join(_memory_lines))
+            parts.append("## Your notes so far\n" + "\n".join(_memory_lines))
     # Ledger last in the system block: the permanent factual spine (durable facts the game itself
     # records), distinct from memory's subjective judgment. Never in the prologue (pre-presidency).
     if phase != "prologue" and _last_journal:
-        parts.append("## Official record (facts, by turn)\n" + _last_journal)
+        parts.append("## Official record of decisions\n" + _last_journal)
     return "\n\n".join(parts)
 
 
@@ -1013,7 +1022,7 @@ def select_reports(reports_str: str) -> str:
 def build_prompt(decision_type: str, context: list[str], choices: list[dict],
                  stats: str = "", codex_refs: list[str] = None, phase: str = "main",
                  news: str = "", reports: str = "", economy: str = "",
-                 min_select: int = 0, max_select: int = 1) -> str:
+                 min_select: int = 0, max_select: int = 1, question: str = "") -> str:
     trimmed      = trim_context(context, context_budget(phase))
     dropped      = len(context) - len(trimmed)
     prefix       = f"({dropped} older lines omitted)\n" if dropped else ""
@@ -1038,7 +1047,19 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
     instruction = type_labels.get(decision_type, "Make your choice")
 
     major = decision_type in ("bill", "paged_decision", "decree")
-    reasoning_hint = "2-3 sentences" if major else "one sentence"
+    # reasoning is written after the index (see _response_format), so it is stated as an
+    # explanation of a choice already made — a bare length hint let the model fill it with
+    # pre-decision deliberation instead.
+    reasoning_hint = ("2-3 sentences explaining the choice you just made"
+                      if major else "one sentence explaining the choice you just made")
+    thinking_hint  = "consider the options, then decide"
+
+    # The thinking scratchpad is only for models that lack a native one. A reasoning model already
+    # deliberates in <think> (stripped by strip_think_tags), so asking for the field as well buys
+    # nothing and charges twice for the same work. Both paths keep the same deliberate → commit →
+    # justify shape; only the deliberation venue differs. Note this example is the *only* shape
+    # guidance on the thinking path — _response_format sends no schema there.
+    think_field = "" if ENABLE_THINKING else f'"thinking": "{thinking_hint}", '
 
     # Inject codex entries most-referenced since the last checkpoint, scaled to how many
     # unique entries have been seen in this fragment (more references → more injection).
@@ -1108,6 +1129,11 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
 
     # Multi-select page (e.g. emergency decrees): the model returns a set of indices within the
     # page's [min, max] choice bounds. Single-select pages keep the single choice_index format.
+    #
+    # Key order matters and must match the declaration order in _response_format(): under schema
+    # enforcement the grammar emits properties in that order, so an example in any other order
+    # primes a shape the model is then forbidden from producing — it plans its answer around the
+    # example and gets masked into the schema's order token by token.
     if max_select > 1:
         if min_select >= max_select:
             count_phrase = f"exactly {max_select}"
@@ -1116,19 +1142,93 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
         else:
             count_phrase = f"between {min_select} and {max_select}"
         instruction = f"Select {count_phrase} of the following options, choosing the best combination"
-        fmt = f'Respond with JSON only: {{"choice_indices": [N, ...], "reasoning": "{reasoning_hint}"}}'
+        fmt = (f'Respond with JSON only: {{{think_field}'
+               f'"choice_indices": [N, ...], "reasoning": "{reasoning_hint}"}}')
     else:
-        fmt = f'Respond with JSON only: {{"choice_index": N, "reasoning": "{reasoning_hint}"}}'
+        if question:
+            instruction = "Select exactly one option"
+        fmt = (f'Respond with JSON only: {{{think_field}'
+               f'"choice_index": N, "reasoning": "{reasoning_hint}"}}')
+
+    # The live question is rendered here rather than appended to the rolling context. A paged panel
+    # asks a run of questions, and turn 1 opens several such panels back to back, so the context
+    # tail is already a column of this panel's question/[CHOICE] pairs. A question sitting in that
+    # column unanswered reads as the last field of one open multi-part form and the model fills in
+    # the whole form; stated here — after the settled context, immediately above the options — it
+    # reads as the single decision it is. Context lines are always settled pairs (see
+    # PagedDecisionDriver.RecordSettled).
+    ask = f"The decision in front of you now:\n{question.strip()}\n\n" if question else ""
 
     return (
         "\n\n".join(sections) + "\n\n"
-        f"{instruction}:\n{choices_text}\n\n"
+        + ask
+        + f"{instruction}:\n{choices_text}\n\n"
         + fmt
     )
 
 
+def _response_format(multi: bool, min_select: int, max_select: int):
+    """Build the per-request response_format. The config blob only selects the mode (absent =
+    unconstrained, json_object, or json_schema); for json_schema the schema is generated here
+    rather than read verbatim, for two reasons:
+
+      - Multi-select pages ask for choice_indices (see build_prompt), so one fixed choice_index
+        schema would constrain the model into the wrong shape on those pages.
+      - Grammar-constrained decoding emits properties in declaration order, so the order here is
+        load-bearing: thinking, then reasoning, then the index. build_prompt's example must be
+        kept in the same order.
+
+    Indices are deliberately left unbounded here — parse_response/parse_multi_response already
+    clamp them to the choice list, and integer range grammars are the least portable part of
+    llama.cpp's schema support."""
+    fmt = config.get("response_format")
+    if not fmt or fmt.get("type") != "json_schema":
+        return fmt
+    # Order: deliberate, commit, then justify.
+    #
+    # thinking is a scratchpad: the model works through the options there. The parsers never read
+    # it, so it is discarded on arrival — the schema-side equivalent of <think> + strip_think_tags.
+    # It exists because a non-reasoning model has nowhere else to work.
+    #
+    # reasoning comes *after* the index on purpose. Written before it, the model has not committed
+    # to anything yet and honestly reports the act of deciding ("I need to weigh X against Y")
+    # rather than the decision — reasoning that reads as desynced from the choice shown next to it.
+    # After the index, the choice is already on the page and reasoning can only explain it.
+    thinking = {"type": "string"}
+    reasoning = {"type": "string"}
+    if multi:
+        indices = {"type": "array", "items": {"type": "integer"}, "maxItems": max_select}
+        if min_select > 0:
+            indices["minItems"] = min_select
+        name  = "multi_decision"
+        props = {"thinking": thinking, "choice_indices": indices, "reasoning": reasoning}
+    else:
+        name  = "decision"
+        props = {"thinking": thinking, "choice_index": {"type": "integer"}, "reasoning": reasoning}
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name":   name,
+            "strict": True,
+            "schema": {
+                "type":                 "object",
+                "properties":           props,
+                "required":             list(props),
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def strip_think_tags(content: str) -> str:
     return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+
+def strip_thinking_member(content: str) -> str:
+    """Drop the "thinking" scratchpad member from a raw reply. Only used to protect the bare-digit
+    fallbacks in the parsers: the scratchpad is prose and routinely contains digits (years, option
+    numbers restated), which a naive digit scan would mistake for the choice."""
+    return re.sub(r'"thinking"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?', "", content, flags=re.DOTALL)
 
 
 def _coerce_index(val) -> int:
@@ -1145,26 +1245,42 @@ def _coerce_index(val) -> int:
     return int(float(val))
 
 
-def parse_response(content: str, num_choices: int) -> tuple[int, str]:
+def parse_response(content: str, num_choices: int) -> tuple[int, str, bool]:
+    """Returns (index, reasoning, ok). `ok` is False when no choice could be extracted at all
+    (invalid/absent JSON and no bare number) — the caller uses that to re-query the LLM. When ok
+    is False the returned index is the default (0)."""
     clean = strip_think_tags(content)
     match = re.search(r"\{.*\}", clean, re.DOTALL)
     if match:
         try:
             data = json.loads(match.group())
-            index = max(0, min(_coerce_index(data.get("choice_index", 0)), num_choices - 1))
-            return index, str(data.get("reasoning", "")).strip()
+            if "choice_index" in data:
+                index = max(0, min(_coerce_index(data["choice_index"]), num_choices - 1))
+                return index, str(data.get("reasoning", "")).strip(), True
         except (json.JSONDecodeError, ValueError, TypeError, IndexError):
             pass
-    digit = re.search(r"\d+", clean)
-    index = max(0, min(int(digit.group()), num_choices - 1)) if digit else 0
-    return index, ""
+    # Malformed or truncated JSON — likelier now that a thinking block precedes everything. The
+    # index sits ahead of reasoning, so a max_tokens cutoff usually leaves it intact in otherwise
+    # unparseable text: recover it by key before falling back to bare digits.
+    keyed = re.search(r'"choice_index"\s*:\s*(-?\d+)', clean)
+    if keyed:
+        return max(0, min(int(keyed.group(1)), num_choices - 1)), "", True
+    digit = re.search(r"\d+", strip_thinking_member(clean))
+    if digit:
+        index = max(0, min(int(digit.group()), num_choices - 1))
+        return index, "", True
+    return 0, "", False
 
 
 def parse_multi_response(content: str, num_choices: int,
-                         min_sel: int, max_sel: int) -> tuple[list[int], str]:
+                         min_sel: int, max_sel: int) -> tuple[list[int], str, bool]:
     """Parse a multi-select reply ({"choice_indices": [...]}). Dedups and bounds each index,
     clamps the set to max_sel, then pads up to min_sel with the next unused options (in listed
-    order) so the page always has enough boxes checked to submit."""
+    order) so the page always has enough boxes checked to submit.
+
+    Returns (indices, reasoning, ok). `ok` is False when nothing usable could be extracted (no
+    JSON indices and no bare numbers) — the caller uses that to re-query the LLM. The min_sel
+    padding still runs on failure so the page can always be submitted as a last resort."""
     clean = strip_think_tags(content)
     indices: list[int] = []
     reasoning = ""
@@ -1186,11 +1302,13 @@ def parse_multi_response(content: str, num_choices: int,
         except (json.JSONDecodeError, ValueError, TypeError, IndexError):
             pass
     if not indices:
-        # Fallback: pull any bare integers out of the raw text.
-        for d in re.findall(r"\d+", clean):
+        # Fallback: pull any bare integers out of the raw text, minus the thinking scratchpad —
+        # its prose is full of digits that would otherwise be read as selections.
+        for d in re.findall(r"\d+", strip_thinking_member(clean)):
             iv = int(d)
             if 0 <= iv < num_choices and iv not in indices:
                 indices.append(iv)
+    ok = bool(indices)
     if max_sel > 0 and len(indices) > max_sel:
         indices = indices[:max_sel]
     if min_sel > 0 and len(indices) < min_sel:
@@ -1199,7 +1317,7 @@ def parse_multi_response(content: str, num_choices: int,
                 break
             if i not in indices:
                 indices.append(i)
-    return indices, reasoning
+    return indices, reasoning, ok
 
 
 def _get_new_lines(prev_ctx: list[str], current_ctx: list[str]) -> list[str]:
@@ -1248,6 +1366,9 @@ def _decision_impl(data, request_id):
     step          = data.get("step", 0)
     fragment      = data.get("fragment", "")
     phase         = data.get("phase", "main")
+    # The question the panel is asking right now, when the panel supplies one (paged decisions).
+    # Kept out of `context` on purpose — see build_prompt.
+    question      = data.get("question", "")
     stats      = data.get("stats", "")
     news       = data.get("news", "")
     reports    = data.get("reports", "") or _last_reports
@@ -1314,7 +1435,7 @@ def _decision_impl(data, request_id):
     # Draft the Presidential Manifesto at the prologue→turn-1 boundary: the first phase=main
     # AI decision. Synchronous so the manifesto is present for this very decision.
     global _manifesto_busy
-    if phase != "prologue" and not _manifesto and not _manifesto_busy:
+    if MANIFESTO_ENABLED and phase != "prologue" and not _manifesto and not _manifesto_busy:
         _manifesto_busy = True
         try:
             _draft_manifesto(context, turn, stats or _last_stats)
@@ -1324,7 +1445,7 @@ def _decision_impl(data, request_id):
         # (system_prompt was computed above, before the draft).
         system_prompt = _effective_system_prompt(phase)
 
-    prompt = build_prompt(decision_type, context, choices, stats, codex_refs, phase, news, reports, economy, min_select, max_select)
+    prompt = build_prompt(decision_type, context, choices, stats, codex_refs, phase, news, reports, economy, min_select, max_select, question)
 
     try:
         kwargs = dict(
@@ -1336,27 +1457,41 @@ def _decision_impl(data, request_id):
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
         )
+        # Reasoning models emit <think> before the JSON, which a schema grammar would forbid from
+        # the very first token — so thinking and schema enforcement stay mutually exclusive.
         if ENABLE_THINKING:
             kwargs["extra_body"] = {"enable_thinking": True}
-        elif "response_format" in config:
-            kwargs["response_format"] = config["response_format"]
+        else:
+            fmt = _response_format(multi, min_select, max_select)
+            if fmt:
+                kwargs["response_format"] = fmt
 
         global _last_prompt_tokens, _last_completion_tokens, _last_raw_request
         _last_raw_request = dict(kwargs)
 
-        response = llm.chat.completions.create(**kwargs)
-        content  = response.choices[0].message.content or ""
-        if multi:
-            indices, reasoning = parse_multi_response(content, len(choices), min_select, max_select)
-            index = indices[0] if indices else 0
-        else:
-            index, reasoning = parse_response(content, len(choices))
-            indices = [index]
+        # Re-query the LLM when its reply has no extractable choice (invalid/absent JSON, no bare
+        # number). Token counts below reflect the final (successful or last) attempt.
+        prompt_tokens = compl_tokens = 0
+        for attempt in range(PARSE_RETRIES + 1):
+            response = llm.chat.completions.create(**kwargs)
+            content  = response.choices[0].message.content or ""
+            usage    = response.usage
+            if usage:
+                prompt_tokens = usage.prompt_tokens
+                compl_tokens  = usage.completion_tokens
+            if multi:
+                indices, reasoning, ok = parse_multi_response(content, len(choices), min_select, max_select)
+                index = indices[0] if indices else 0
+            else:
+                index, reasoning, ok = parse_response(content, len(choices))
+                indices = [index]
+            if ok:
+                break
+            if attempt < PARSE_RETRIES:
+                print(f"[AI reparse] no valid choice in reply (attempt {attempt + 1}/"
+                      f"{PARSE_RETRIES + 1}); re-querying LLM", flush=True)
         if stats:
             _last_stats = stats
-        usage         = response.usage
-        prompt_tokens = usage.prompt_tokens     if usage else 0
-        compl_tokens  = usage.completion_tokens if usage else 0
         _last_prompt_tokens     = prompt_tokens
         _last_completion_tokens = compl_tokens
 
@@ -1378,6 +1513,7 @@ def _decision_impl(data, request_id):
             "fragment":         fragment,
             "decision_type":    decision_type,
             "phase":            phase,
+            "question":         question,
             "choices":          choices,
             "choice_index":     index,
             "choice_indices":   indices,
@@ -1489,7 +1625,7 @@ def checkpoint():
     # Revise the manifesto once per turn (major-turn cadence): only when the turn has advanced
     # past the last draft/revision and a manifesto exists. The checkpoint worker does it after
     # the memory summary so the snapshot captures both.
-    revise = bool(_manifesto) and turn > _manifesto_turn
+    revise = MANIFESTO_ENABLED and bool(_manifesto) and turn > _manifesto_turn
     if revise:
         _manifesto_turn = turn
 
@@ -1503,9 +1639,19 @@ def checkpoint():
     return jsonify({"status": "ok"})
 
 
+_SERVER_START = datetime.now()
+
+
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "run_id": RUN_ID, "model": DISPLAY_NAME})
+    uptime = (datetime.now() - _SERVER_START).total_seconds()
+    return jsonify({
+        "status":         "ok",
+        "run_id":         RUN_ID,
+        "model":          DISPLAY_NAME,
+        "started_at":     _SERVER_START.isoformat(timespec="seconds"),
+        "uptime_seconds": int(uptime),
+    })
 
 
 @app.post("/quit")
@@ -1608,7 +1754,7 @@ def resume():
 def get_manifesto():
     with _manifesto_lock:
         text = _manifesto
-    return jsonify({"manifesto": text, "turn": _manifesto_turn})
+    return jsonify({"manifesto": text, "turn": _manifesto_turn, "enabled": MANIFESTO_ENABLED})
 
 
 @app.delete("/manifesto")
@@ -1699,12 +1845,54 @@ def last_prompt():
 
 
 
+# ── Remote read-only view ─────────────────────────────────────────────────────
+# A request that arrived through the Cloudflare tunnel carries Cloudflare-injected
+# headers that a direct localhost/LAN connection never has. That traffic is the remote
+# viewer and is restricted to reads; the game and a local browser reach the server
+# directly (no such headers) and keep full control. Fail-closed: anything that looks
+# like it came from the internet is treated as read-only.
+_CLOUDFLARE_MARKERS = ("Cf-Ray", "Cf-Connecting-Ip", "Cdn-Loop", "Cf-Access-Jwt-Assertion")
+
+# GET endpoints a remote viewer may read. Everything else — and every non-GET method —
+# is a control action (POST /ask, POST /quit, DELETE /memory, the game's POSTs) and is
+# refused for remote traffic.
+_REMOTE_READ_PATHS = {
+    "/", "/context", "/decisions", "/memory", "/activity",
+    "/manifesto", "/last-prompt", "/health", "/whoami",
+}
+
+
+def _is_remote_view() -> bool:
+    return any(h in request.headers for h in _CLOUDFLARE_MARKERS)
+
+
+@app.before_request
+def _guard_remote_view():
+    if _is_remote_view():
+        if not ALLOW_REMOTE_VIEW:
+            return "Remote access is disabled.", 403
+        if request.method != "GET" or request.path not in _REMOTE_READ_PATHS:
+            return "This is a read-only view.", 403
+
+
 @app.get("/")
 def panel():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html")
     with open(path, encoding="utf-8") as f:
-        return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        html = f.read()
+    if _is_remote_view():
+        # Tag the body read-only (CSS hides the controls) and slow the polling loop.
+        inject = f'<body class="readonly"><script>window.POLL_SCALE={REMOTE_POLL_SCALE};</script>'
+        html = html.replace("<body>", inject, 1)
+    # no-store so a stale (non-read-only) copy is never served from browser or edge cache.
+    return html, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+    }
 
+@app.get("/whoami")
+def whoami():
+    return jsonify(dict(request.headers))
 
 @app.post("/ask")
 def ask():

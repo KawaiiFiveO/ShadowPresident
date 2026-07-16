@@ -49,7 +49,7 @@ def clean(s):
     (narration can be multi-paragraph; the CSS renders them with white-space:pre-wrap)."""
     if not s:
         return ""
-    return s.replace("�", "").strip()
+    return s.replace("\r\n", "\n").replace("\r", "\n").replace("�", "").strip()
 
 
 def pretty_fragment(frag):
@@ -1261,7 +1261,7 @@ f"<style>{CSS}</style></head><body>"
     )
 
     out = args.out or os.path.splitext(path)[0] + ".html"
-    with open(out, "w", encoding="utf-8") as f:
+    with open(out, "w", encoding="utf-8", newline="") as f:
         f.write(html_out)
     print(f"Wrote {out}  ({len(html_out):,} bytes, {len(entries):,} entries, {n_sections} sections)")
 

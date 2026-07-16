@@ -29,6 +29,13 @@ public class PagedDecisionDriver : MonoBehaviour
     // Option labels for [CHOICE] context line
     private List<(int, string)> _pendingOptions;
 
+    // The question this page asks. Sent with the /decision request and only written to the rolling
+    // context afterwards, paired with the answer. Turn 1 opens several paged panels back to back,
+    // so the context tail already holds this panel's earlier pages; a question pushed in *before*
+    // the request dangles there unanswered, indistinguishable from the settled ones, and the model
+    // answers the whole apparent form at once instead of the single page in front of it.
+    private string _pendingQuestion = "";
+
     void Update()
     {
         if (!Plugin.AutomationEnabled) { return; }
@@ -87,6 +94,18 @@ public class PagedDecisionDriver : MonoBehaviour
 
             string pageTitle = ReadTMP(page.Pointer + 0x40);
             string pageDesc = ReadTMP(page.Pointer + 0x48);
+
+            // Some pages carry no per-page title/description — notably the Turn-1 term-focus
+            // carousel, whose options are self-describing policy areas. Left blank, the model is
+            // asked to choose with no question at all and hallucinates what it's deciding. Fall
+            // back to the panel's own title/description (panel +0x28/+0x30) —
+            // PagedDecisionPanelProperties.Title is a RequiredField, so this is always populated.
+            if (string.IsNullOrWhiteSpace(pageTitle))
+            {
+                pageTitle = ReadTMP(_panel.Pointer + 0x28);
+                if (string.IsNullOrWhiteSpace(pageDesc)) { pageDesc = ReadTMP(_panel.Pointer + 0x30); }
+            }
+
             nint carouselDataPtr = *(nint*)(page.Pointer + 0x90);
             nint multiDataPtr = *(nint*)(page.Pointer + 0x98);
 
@@ -118,27 +137,43 @@ public class PagedDecisionDriver : MonoBehaviour
         if (total == 0) { SetAdvanceTimer(); return; }
 
         // CarouselChoiceOptionProperties: Title at +0x10, Description at +0x18
-        var options = new List<(int, string)>(total);
+        var titles = new List<string>(total);
+        var descs = new List<string>(total);
         for (int i = 0; i < total; i++)
         {
             var item = choiceList[i];
-            string label = "";
+            string title = "", desc = "";
             if (item != null)
             {
                 nint propsPtr = *(nint*)(item.Pointer + 0x38);
                 if (propsPtr != 0)
                 {
                     nint titlePtr = *(nint*)(propsPtr + 0x10);
-                    if (titlePtr != 0) { label = ConversationLinePatch.StripTags(new Il2CppSystem.String((IntPtr)titlePtr)); }
+                    if (titlePtr != 0) { title = ConversationLinePatch.StripTags(new Il2CppSystem.String((IntPtr)titlePtr)); }
 
                     nint descPtr = *(nint*)(propsPtr + 0x18);
-                    if (descPtr != 0)
-                    {
-                        string desc = ConversationLinePatch.StripTags(new Il2CppSystem.String((IntPtr)descPtr));
-                        if (!string.IsNullOrWhiteSpace(desc)) { label = $"{label} — {desc}"; }
-                    }
+                    if (descPtr != 0) { desc = ConversationLinePatch.StripTags(new Il2CppSystem.String((IntPtr)descPtr)); }
                 }
             }
+            titles.Add(title);
+            descs.Add(desc);
+        }
+
+        // Funding carousels give every option (Maintain/Increase/Decrease) the same Description: it
+        // states the department's situation, not what the option does. Appended to each title it
+        // triples the prompt and renders three choices that read as identical. Hoist it into the
+        // question and leave the options as the bare verbs that actually distinguish them.
+        string sharedDesc = SharedDescription(descs);
+        if (sharedDesc != null && !pageDesc.Contains(sharedDesc))
+        {
+            pageDesc = string.IsNullOrWhiteSpace(pageDesc) ? sharedDesc : $"{pageDesc} {sharedDesc}";
+        }
+
+        var options = new List<(int, string)>(total);
+        for (int i = 0; i < total; i++)
+        {
+            string label = titles[i];
+            if (sharedDesc == null && !string.IsNullOrWhiteSpace(descs[i])) { label = $"{label} — {descs[i]}"; }
             options.Add((i, label));
         }
 
@@ -158,11 +193,11 @@ public class PagedDecisionDriver : MonoBehaviour
             return;
         }
 
-        string contextLabel = string.IsNullOrWhiteSpace(pageDesc) ? pageTitle : $"{pageTitle}: {pageDesc}";
-        AIClient.AddContext("Policy decision", contextLabel);
+        _pendingQuestion = string.IsNullOrWhiteSpace(pageDesc) ? pageTitle : $"{pageTitle}: {pageDesc}";
         AIOverlay.ShowThinking();
         _pendingOptions = new List<(int, string)>(options);
-        _aiTask = Task.Run(() => AIClient.RequestDecision("paged_decision", _pendingOptions));
+        var question = _pendingQuestion;
+        _aiTask = Task.Run(() => AIClient.RequestDecision("paged_decision", _pendingOptions, question));
     }
 
     private unsafe void ProcessMultiPage(TemplatePagedDecisionsPage page, string pageTitle, string pageDesc)
@@ -219,21 +254,21 @@ public class PagedDecisionDriver : MonoBehaviour
             return;
         }
 
-        string contextLabel = string.IsNullOrWhiteSpace(pageDesc) ? pageTitle : $"{pageTitle}: {pageDesc}";
-        AIClient.AddContext("Policy decision", contextLabel);
+        _pendingQuestion = string.IsNullOrWhiteSpace(pageDesc) ? pageTitle : $"{pageTitle}: {pageDesc}";
         AIOverlay.ShowThinking();
         _pendingOptions = new List<(int, string)>(options);
+        var question = _pendingQuestion;
 
         if (multiSelect)
         {
             // Checkbox page (e.g. emergency decrees): the AI picks a set within [min, max].
             int min = Math.Max(0, minChoices);
             int max = Math.Min(maxChoices, count);
-            _aiMultiTask = Task.Run(() => AIClient.RequestMultiDecision("paged_decision", _pendingOptions, min, max));
+            _aiMultiTask = Task.Run(() => AIClient.RequestMultiDecision("paged_decision", _pendingOptions, min, max, question));
         }
         else
         {
-            _aiTask = Task.Run(() => AIClient.RequestDecision("paged_decision", _pendingOptions));
+            _aiTask = Task.Run(() => AIClient.RequestDecision("paged_decision", _pendingOptions, question));
         }
     }
 
@@ -253,9 +288,9 @@ public class PagedDecisionDriver : MonoBehaviour
 
         AIOverlay.ShowReasoning(result.Value.reasoning);
 
-        if (_pendingOptions != null && result.Value.index < _pendingOptions.Count)
+        if (_pendingOptions != null && result.Value.index >= 0 && result.Value.index < _pendingOptions.Count)
         {
-            AIClient.AddContext("[CHOICE]", _pendingOptions[result.Value.index].Item2);
+            RecordSettled(_pendingOptions[result.Value.index].Item2);
         }
 
         if (_pendingCarousel != null)
@@ -296,7 +331,7 @@ public class PagedDecisionDriver : MonoBehaviour
             {
                 if (i >= 0 && i < _pendingOptions.Count) { labels.Add(_pendingOptions[i].Item2); }
             }
-            if (labels.Count > 0) { AIClient.AddContext("[CHOICE]", string.Join("; ", labels)); }
+            if (labels.Count > 0) { RecordSettled(string.Join("; ", labels)); }
         }
 
         if (_pendingMultiOptions != null)
@@ -316,6 +351,19 @@ public class PagedDecisionDriver : MonoBehaviour
         }
 
         SetAdvanceTimer();
+    }
+
+    // Append the page's question and its answer to the rolling context as one settled pair, once
+    // the AI has committed. Both land together so the context can never hold an open question —
+    // see _pendingQuestion.
+    private void RecordSettled(string answer)
+    {
+        if (!string.IsNullOrWhiteSpace(_pendingQuestion))
+        {
+            AIClient.AddContext("Policy decision", _pendingQuestion);
+        }
+        AIClient.AddContext("[CHOICE]", answer);
+        _pendingQuestion = "";
     }
 
     private void SelectCarousel(int target)
@@ -385,6 +433,21 @@ public class PagedDecisionDriver : MonoBehaviour
         _pendingCarousel = null;
         _pendingMultiOptions = null;
         _pendingOptions = null;
+        _pendingQuestion = "";
+    }
+
+    // The description every option carries verbatim, or null when they differ or there is nothing to
+    // share. A one-option carousel duplicates nothing, so its description stays on the option.
+    private static string SharedDescription(List<string> descs)
+    {
+        if (descs.Count < 2) { return null; }
+        string first = descs[0];
+        if (string.IsNullOrWhiteSpace(first)) { return null; }
+        for (int i = 1; i < descs.Count; i++)
+        {
+            if (!string.Equals(descs[i], first, StringComparison.Ordinal)) { return null; }
+        }
+        return first;
     }
 
     private static unsafe string ReadTMP(nint fieldAddress)
