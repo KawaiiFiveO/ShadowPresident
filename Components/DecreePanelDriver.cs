@@ -149,6 +149,7 @@ public class DecreePanelDriver : MonoBehaviour
 
         AIClient.AddContext("One-time decree panel",
             $"{_availableDecrees.Count} decree(s) available, {slotsLeft} slot(s) remaining");
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         var optsCopy = new List<(int, string)>(options);
         _aiTask = Task.Run(() => AIClient.RequestDecision("decree", optsCopy));
@@ -303,6 +304,7 @@ public class DecreePanelDriver : MonoBehaviour
         }
 
         AIClient.AddContext("Decree panel", $"{_availableDecrees.Count} decree(s) available to sign");
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         var optsCopy = new List<(int, string)>(options);
         _aiTask = Task.Run(() => AIClient.RequestDecision("decree", optsCopy));

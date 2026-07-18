@@ -6,6 +6,7 @@ import re
 import shutil
 import socket
 import threading
+import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -72,10 +73,23 @@ def _local_ipv4_addresses():
             tag = "other (VPN?)"
         labeled.append((ip, tag))
     return labeled
-MAX_TOKENS      = config.get("max_tokens", 1024)
+MAX_TOKENS      = config.get("max_tokens", 4096)
 TEMPERATURE     = config.get("temperature", 0.7)
+SUMMARY_TEMPERATURE = config.get("summary_temperature", 0.7)
 DISPLAY_NAME    = config.get("display_name") or MODEL.split("/")[-1]
 ENABLE_THINKING     = config.get("enable_thinking", False)
+# When thinking is on globally, summary generation (memory entries + compaction) can opt out of
+# the <think> block — those outputs are clipped/compressed anyway, so the reasoning is wasted
+# tokens and latency. Only consulted when ENABLE_THINKING is true; defaults to True (no change).
+# Sent as chat_template_kwargs — the documented Qwen3.5 lever (its chat template exposes an
+# enable_thinking switch). Whether it takes effect depends on the SERVING BACKEND forwarding
+# chat_template_kwargs into the template: vLLM does; LM Studio's engine is the open question —
+# watch a checkpoint's server log to confirm the summary has no <think> block. If the backend
+# does NOT forward it, the only fallbacks are global and also disable thinking for decisions: a
+# template edit ({%- set enable_thinking = false %} on line 1) or ollama's --think=false.
+# strip_think_tags removes the block regardless, so an unforwarded flag costs tokens/latency,
+# never correctness.
+SUMMARY_ENABLE_THINKING = config.get("summary_enable_thinking", True)
 # When the model returns a reply we can't extract a choice from (no JSON, no bare number), re-query
 # the LLM up to this many extra times before giving up and falling back to the default choice.
 PARSE_RETRIES       = config.get("parse_retries", 2)
@@ -84,7 +98,7 @@ PARSE_RETRIES       = config.get("parse_retries", 2)
 # a small overhead for choices/stats/codex/formatting — so we actually fill the window instead of
 # guessing a static cap.
 CONTEXT_WINDOW              = config.get("context_window", 8192)
-PROMPT_OVERHEAD_TOKENS      = config.get("prompt_overhead_tokens", 400)
+PROMPT_OVERHEAD_TOKENS      = config.get("prompt_overhead_tokens", 600)
 # Optional hard ceiling on the dialogue-context budget; None (omit from config) = derive purely
 # from the window.
 MAX_CONTEXT_TOKENS          = config.get("max_context_tokens")
@@ -193,6 +207,14 @@ _fragment_context: list[str] = []
 # Last decision token counts, game stats, injected codex entries, and raw request body
 _last_prompt_tokens     = 0
 _last_completion_tokens = 0
+_last_gen_seconds       = 0.0      # wall-clock generation time of the last decision's final attempt
+_last_tok_per_sec       = 0.0      # completion_tokens / gen_seconds for that attempt (0 if unmeasurable)
+# Serializes every LLM request. The backend serves one model, so concurrent calls (a background
+# summary/compaction/manifesto revision overlapping a decision) queue at the server anyway — but
+# that queue-wait would inflate a decision's measured gen_seconds and corrupt the tok/s gauge for
+# both the overlapped decision and the one after. Holding this lock around each create() keeps the
+# timed window contention-free so the speedometer reflects real generation speed.
+_llm_lock               = threading.Lock()
 _last_stats             = ""
 _last_news              = ""        # windowed subset actually sent to the LLM
 _last_reports           = ""
@@ -237,20 +259,38 @@ _last_codex_tokens = 0
 # KEEP_RECENT tokens verbatim. Target ~3k tokens (~7% of the 40k window) — bigger isn't better
 # (lost-in-the-middle + small-model drift); the extra window goes to dialogue context + ledger.
 MEMORY_FILE               = "memory.txt"
-MEMORY_TOKEN_CEILING      = 6000   # compact when estimated memory tokens exceed this
-MEMORY_KEEP_RECENT_TOKENS = 3200   # keep this many recent tokens verbatim through a compaction
+MEMORY_ARCHIVE_FILE       = "memory_archive.txt"  # overflow when compaction can't run — nothing is ever lost
+MEMORY_TOKEN_CEILING      = 4000   # compact when estimated memory tokens exceed this
+MEMORY_KEEP_RECENT_TOKENS = 2400   # keep this many recent tokens verbatim through a compaction
 MEMORY_HARD_LINE_CAP      = 200    # absolute FIFO backstop if compaction can't run (LLM down)
+MEMORY_COMPACT_ATTEMPTS   = 3      # LLM tries before giving up and FIFO-truncating instead
 _memory_lines: list[str] = []
 _memory_lock = threading.Lock()
 _compacting  = False
+_memory_saved_mtime = 0.0   # mtime of memory.txt the last time *the server* wrote it; a differing
+                            # on-disk mtime means a human hand-edited the file (see _reload_memory_if_edited)
 
 # Presidential Manifesto — the AI's living strategy doc. Drafted at the prologue→turn-1
 # boundary (first phase=main decision) and revised once per turn at checkpoints. Injected
 # into the main system prompt between the persona/rules and memory (volatility ordering).
 MANIFESTO_FILE   = "manifesto.txt"
-# Master switch. False → the AI never drafts or revises a manifesto, nothing is injected into
-# the prompt, and no manifesto file is read, written, or snapshotted.
-MANIFESTO_ENABLED = config.get("enable_manifesto", True)
+# Mode selector:
+#   "ai"    — the AI drafts at turn 1 and revises each turn (the original behaviour)
+#   "human" — manifesto.txt is authored by you and is read-only to the server: injected into
+#             every main-phase prompt, never drafted, revised, snapshotted or overwritten.
+#             Edits to the file land at the next checkpoint (see _reload_authored_manifesto).
+#   "off"   — no manifesto at all; nothing read, written, injected or snapshotted.
+# Back-compat: absent `manifesto_mode` falls back to the older `enable_manifesto` bool.
+MANIFESTO_MODE = str(config.get(
+    "manifesto_mode",
+    "ai" if config.get("enable_manifesto", True) else "off",
+)).strip().lower()
+if MANIFESTO_MODE not in ("ai", "human", "off"):
+    print(f"[manifesto] Unknown manifesto_mode {MANIFESTO_MODE!r} — falling back to 'ai'.", flush=True)
+    MANIFESTO_MODE = "ai"
+MANIFESTO_ENABLED  = MANIFESTO_MODE != "off"
+# True → the manifesto is human-written; every AI write path is a no-op.
+MANIFESTO_AUTHORED = MANIFESTO_MODE == "human"
 # Completion budget for drafting/revising the manifesto. Must be generous: a reasoning model
 # (R1/QwQ distills) spends most of the budget inside <think>, and 1024 left the four sections
 # truncated — or cut the model off mid-<think>, leaving an unclosed block that can't be stripped.
@@ -260,6 +300,7 @@ _manifesto_lock    = threading.Lock()
 _manifesto_turn    = 0   # last turn the manifesto was drafted/revised for (0 = not yet drafted)
 _manifesto_busy    = False  # guards against concurrent draft/revise calls
 _manifesto_version = 0   # monotonic version label for the logged history (export)
+_manifesto_mtime   = 0.0 # mtime of the last read of MANIFESTO_FILE ("human" mode reload check)
 
 
 def _write_txt(text: str):
@@ -388,10 +429,12 @@ def _start_new_run():
     _prev_turn    = -1
     _panel_context.clear()
     # Fresh playthrough → fresh manifesto (drafted at turn 1). Clear any leftover from a prior
-    # run so the turn-1 draft trigger fires instead of injecting a stale plan.
-    _manifesto      = ""
-    _manifesto_turn = 0
-    _save_manifesto()
+    # run so the turn-1 draft trigger fires instead of injecting a stale plan. In "human" mode
+    # the manifesto is the author's standing plan and outlives any single run — keep it.
+    if not MANIFESTO_AUTHORED:
+        _manifesto      = ""
+        _manifesto_turn = 0
+        _save_manifesto()
     _save_run_meta()
     print(f"[run] New run {run_id} → {_jsonl_path}", flush=True)
 
@@ -439,17 +482,30 @@ def _load_or_create_run():
                     _last_checkpoint_offset = offset or 0
 
                     # Restore the memory snapshot taken at the last checkpoint so memory is
-                    # consistent with the committed state even after a non-clean exit.
+                    # consistent with the committed state even after a non-clean exit — UNLESS
+                    # memory.txt has been hand-edited since the snapshot was written. A human
+                    # who edited the live file (while the server was stopped) is deliberately
+                    # overriding memory; restoring the snapshot would silently undo that. Prefer
+                    # the newer file by mtime, mirroring the manifesto "human" reasoning above.
                     snap = meta.get("memory_snapshot", "")
                     if snap and os.path.exists(snap):
                         try:
-                            shutil.copyfile(snap, MEMORY_FILE)
-                            print(f"[run] Restored memory snapshot from {snap}.", flush=True)
+                            edited = (os.path.exists(MEMORY_FILE) and
+                                      os.path.getmtime(MEMORY_FILE) > os.path.getmtime(snap))
+                            if edited:
+                                print(f"[run] memory.txt is newer than the snapshot — keeping your "
+                                      f"hand-edited memory, snapshot restore skipped.", flush=True)
+                            else:
+                                shutil.copyfile(snap, MEMORY_FILE)
+                                print(f"[run] Restored memory snapshot from {snap}.", flush=True)
                         except Exception as e:
                             print(f"[run] Could not restore memory snapshot: {e}", flush=True)
 
+                    # Skipped in "human" mode — restoring a snapshot would overwrite the
+                    # author's manifesto.txt with a copy of itself at best, or with a stale
+                    # AI-era snapshot from a previous run at worst.
                     msnap = meta.get("manifesto_snapshot", "")
-                    if MANIFESTO_ENABLED and msnap and os.path.exists(msnap):
+                    if MANIFESTO_ENABLED and not MANIFESTO_AUTHORED and msnap and os.path.exists(msnap):
                         try:
                             shutil.copyfile(msnap, MANIFESTO_FILE)
                             print(f"[run] Restored manifesto snapshot from {msnap}.", flush=True)
@@ -480,42 +536,120 @@ def _load_or_create_run():
 # ── Memory helpers ────────────────────────────────────────────────────────────
 
 def _load_memory():
-    global _memory_lines
+    global _memory_lines, _memory_saved_mtime
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, encoding="utf-8") as f:
                 _memory_lines = [l.rstrip("\n") for l in f if l.strip()]
+            _memory_saved_mtime = os.path.getmtime(MEMORY_FILE)
             print(f"[memory] Loaded {len(_memory_lines)} entries from {MEMORY_FILE}", flush=True)
         except Exception as e:
             print(f"[memory] Could not load {MEMORY_FILE}: {e}", flush=True)
 
 
 def _save_memory():
+    global _memory_saved_mtime
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             f.write("\n".join(_memory_lines) + "\n")
+        _memory_saved_mtime = os.path.getmtime(MEMORY_FILE)
     except Exception as e:
         print(f"[memory] Write failed: {e}", flush=True)
+
+
+def _reload_memory_if_edited():
+    """If memory.txt has a different mtime than the server's last write, a human hand-edited the
+    live file — reload it so the edit isn't clobbered by the in-RAM list. Caller must hold
+    _memory_lock. Returns True if it reloaded."""
+    global _memory_lines, _memory_saved_mtime
+    if not os.path.exists(MEMORY_FILE):
+        return False
+    try:
+        if os.path.getmtime(MEMORY_FILE) == _memory_saved_mtime:
+            return False
+        with open(MEMORY_FILE, encoding="utf-8") as f:
+            _memory_lines = [l.rstrip("\n") for l in f if l.strip()]
+        _memory_saved_mtime = os.path.getmtime(MEMORY_FILE)
+        print(f"[memory] Picked up hand-edited {MEMORY_FILE} ({len(_memory_lines)} entries).", flush=True)
+        return True
+    except Exception as e:
+        print(f"[memory] Could not reload {MEMORY_FILE}: {e}", flush=True)
+        return False
+
+
+def _archive_memory(lines: list[str], reason: str) -> bool:
+    """Append entries to the archive file (never truncated) before they leave live memory,
+    so a human can always recover them. Returns True only if the write succeeded."""
+    if not lines:
+        return True
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(MEMORY_ARCHIVE_FILE, "a", encoding="utf-8") as f:
+            f.write(f"# ── {stamp} — {reason} ──\n")
+            f.write("\n".join(lines) + "\n")
+        return True
+    except Exception as e:
+        print(f"[memory] Archive write failed: {e}", flush=True)
+        return False
 
 
 # ── Manifesto helpers ─────────────────────────────────────────────────────────
 
 def _load_manifesto():
-    global _manifesto
+    global _manifesto, _manifesto_mtime
     if not MANIFESTO_ENABLED:
         return
     if os.path.exists(MANIFESTO_FILE):
         try:
             with open(MANIFESTO_FILE, encoding="utf-8") as f:
                 _manifesto = f.read().strip()
+            _manifesto_mtime = os.path.getmtime(MANIFESTO_FILE)
             if _manifesto:
-                print(f"[manifesto] Loaded {len(_manifesto)} chars from {MANIFESTO_FILE}", flush=True)
+                label = "human-written " if MANIFESTO_AUTHORED else ""
+                print(f"[manifesto] Loaded {len(_manifesto)} {label}chars from {MANIFESTO_FILE}", flush=True)
         except Exception as e:
             print(f"[manifesto] Could not load {MANIFESTO_FILE}: {e}", flush=True)
+    if MANIFESTO_AUTHORED:
+        if _manifesto:
+            # Log the standing plan so the export has a manifesto entry to show: in "human"
+            # mode nothing else ever writes one.
+            log_manifesto(_manifesto_turn, "human", _manifesto)
+        else:
+            print(f"[manifesto] mode=human but {MANIFESTO_FILE} is empty — no manifesto will be "
+                  f"injected until you write one.", flush=True)
+
+
+def _reload_authored_manifesto(turn: int):
+    """Re-read a human-written manifesto if the file changed on disk.
+
+    Lets the author revise the standing plan mid-run without restarting the server. Called at
+    checkpoints only — a decision must never see the manifesto change out from under the prompt
+    it was built with. A changed text is logged as a new version so the export shows the history.
+    """
+    global _manifesto, _manifesto_mtime
+    if not MANIFESTO_AUTHORED or not os.path.exists(MANIFESTO_FILE):
+        return
+    try:
+        mtime = os.path.getmtime(MANIFESTO_FILE)
+        if mtime == _manifesto_mtime:
+            return
+        with open(MANIFESTO_FILE, encoding="utf-8") as f:
+            text = f.read().strip()
+        _manifesto_mtime = mtime
+        with _manifesto_lock:
+            if text == _manifesto:
+                return
+            _manifesto = text
+        log_manifesto(turn, "human", text)
+        _log_activity("manifesto", desc=f"Reloaded human-written manifesto (Turn {turn})")
+        print(f"[manifesto] Reloaded human-written manifesto at Turn {turn}.", flush=True)
+    except Exception as e:
+        print(f"[manifesto] Reload failed: {e}", flush=True)
 
 
 def _save_manifesto():
-    if not MANIFESTO_ENABLED:
+    # In "human" mode manifesto.txt belongs to the author, not the server — never write it.
+    if not MANIFESTO_ENABLED or MANIFESTO_AUTHORED:
         return
     try:
         with open(MANIFESTO_FILE, "w", encoding="utf-8") as f:
@@ -526,7 +660,9 @@ def _save_manifesto():
 
 def _snapshot_manifesto():
     """Copy the live manifesto to the per-run snapshot used for resume restoration."""
-    if not MANIFESTO_ENABLED or not _manifesto_snapshot_path:
+    # Nothing to snapshot in "human" mode: the manifesto never changes behind the author's
+    # back, so manifesto.txt itself is the source of truth across restarts and resumes.
+    if not MANIFESTO_ENABLED or MANIFESTO_AUTHORED or not _manifesto_snapshot_path:
         return
     try:
         with _manifesto_lock:
@@ -569,15 +705,16 @@ def _draft_manifesto(context: list[str], turn: int, stats: str = ""):
         + "No preamble; just the four headed sections."
     )
     try:
-        resp = llm.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": _MANIFESTO_SYS},
-                {"role": "user",   "content": prompt},
-            ],
-            max_tokens=MANIFESTO_MAX_TOKENS,
-            temperature=TEMPERATURE,
-        )
+        with _llm_lock:
+            resp = llm.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": _MANIFESTO_SYS},
+                    {"role": "user",   "content": prompt},
+                ],
+                max_tokens=MANIFESTO_MAX_TOKENS,
+                temperature=TEMPERATURE,
+            )
         text = strip_think_tags(resp.choices[0].message.content or "").strip()
         if text:
             with _manifesto_lock:
@@ -611,15 +748,16 @@ def _revise_manifesto(context: list[str], turn: int, stats: str = ""):
         + "\nNo preamble; just the four headed sections."
     )
     try:
-        resp = llm.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": _MANIFESTO_SYS},
-                {"role": "user",   "content": prompt},
-            ],
-            max_tokens=MANIFESTO_MAX_TOKENS,
-            temperature=TEMPERATURE,
-        )
+        with _llm_lock:
+            resp = llm.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": _MANIFESTO_SYS},
+                    {"role": "user",   "content": prompt},
+                ],
+                max_tokens=MANIFESTO_MAX_TOKENS,
+                temperature=TEMPERATURE,
+            )
         text = strip_think_tags(resp.choices[0].message.content or "").strip()
         if text:
             with _manifesto_lock:
@@ -639,6 +777,9 @@ def _memory_tokens(lines: list[str]) -> int:
 def _append_memory(entry: str):
     global _compacting
     with _memory_lock:
+        # Pick up any hand-edit to memory.txt before appending, so the in-RAM list doesn't
+        # overwrite it (the server, not RAM, is stale after an external edit).
+        _reload_memory_if_edited()
         _memory_lines.append(entry)
         # Hard FIFO backstop in case compaction can't run (e.g. the LLM is unreachable).
         if len(_memory_lines) > MEMORY_HARD_LINE_CAP:
@@ -689,27 +830,60 @@ def _run_compaction():
                 {"role": "system", "content": "You compress a political journal, preserving the writer's subjective judgments, alliances, and strategy. Be specific."},
                 {"role": "user",   "content": prompt},
             ],
-            max_tokens=4096,
-            temperature=TEMPERATURE,
+            max_tokens=8192,
+            temperature=SUMMARY_TEMPERATURE,
         )
+        if ENABLE_THINKING:
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": SUMMARY_ENABLE_THINKING}}
 
-        response = llm.chat.completions.create(**kwargs)
-        raw      = strip_think_tags(response.choices[0].message.content or "").strip()
-        bullets  = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-        summary  = [f"[Summary] {b.lstrip('•').strip()}" for b in bullets if b]
+        # Retry a few times: the LLM may error transiently or return nothing usable.
+        summary = []
+        for attempt in range(1, MEMORY_COMPACT_ATTEMPTS + 1):
+            try:
+                with _llm_lock:
+                    response = llm.chat.completions.create(**kwargs)
+                raw      = strip_think_tags(response.choices[0].message.content or "").strip()
+                bullets  = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+                summary  = [f"[Summary] {b.lstrip('•').strip()}" for b in bullets if b]
+                if summary:
+                    break
+                print(f"[memory] Compaction attempt {attempt}/{MEMORY_COMPACT_ATTEMPTS} returned nothing.", flush=True)
+            except Exception as e:
+                print(f"[memory] Compaction attempt {attempt}/{MEMORY_COMPACT_ATTEMPTS} failed: {e}", flush=True)
+
+        archived = False
+        if not summary:
+            # LLM gave nothing after every attempt — don't compact. Move the oldest entries
+            # to the archive file (never dropped, so a human can recover them later) before
+            # they leave live memory. If even the archive write fails, bail without touching
+            # live memory — the hard FIFO cap remains the last-resort backstop.
+            archived = _archive_memory(to_compact, f"compaction unavailable after {MEMORY_COMPACT_ATTEMPTS} attempts")
+            if not archived:
+                print("[memory] Archive failed — leaving memory intact for a later retry.", flush=True)
+                return
 
         with _memory_lock:
             # Keep entries added while the LLM was running (indices ≥ n)
             added_since = list(_memory_lines[n:])
             recent      = list(_memory_lines[split:n])
             _memory_lines.clear()
-            _memory_lines.extend(summary)
+            if summary:
+                # Successful compaction: replace the old block with its summary.
+                _memory_lines.extend(summary)
+            else:
+                # Entries are safe in the archive; leave a marker pointing there so a human
+                # can see the summary is missing and intervene.
+                _memory_lines.append(f"[Archived] {len(to_compact)} older entries moved to {MEMORY_ARCHIVE_FILE} — compaction unavailable.")
             _memory_lines.extend(recent)
             _memory_lines.extend(added_since)
             _save_memory()
 
-        print(f"[memory] Compacted {len(to_compact)} → {len(summary)} lines", flush=True)
-        _log_activity("compact", desc=f"Compacted {len(to_compact)} → {len(summary)} entries")
+        if summary:
+            print(f"[memory] Compacted {len(to_compact)} → {len(summary)} lines", flush=True)
+            _log_activity("compact", desc=f"Compacted {len(to_compact)} → {len(summary)} entries")
+        else:
+            print(f"[memory] Compaction unavailable after {MEMORY_COMPACT_ATTEMPTS} attempts — archived {len(to_compact)} oldest entries to {MEMORY_ARCHIVE_FILE}.", flush=True)
+            _log_activity("compact", desc=f"Compaction unavailable — archived {len(to_compact)} oldest entries")
     except Exception as e:
         print(f"[memory] Compaction failed: {e}", flush=True)
     finally:
@@ -767,11 +941,14 @@ def _generate_memory_entry(context: list[str], turn: int, fragment: str):
                 {"role": "system", "content": sys_prompt},
                 {"role": "user",   "content": prompt},
             ],
-            max_tokens=4096,
-            temperature=TEMPERATURE,
+            max_tokens=8192,
+            temperature=SUMMARY_TEMPERATURE,
         )
+        if ENABLE_THINKING:
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": SUMMARY_ENABLE_THINKING}}
 
-        response = llm.chat.completions.create(**kwargs)
+        with _llm_lock:
+            response = llm.chat.completions.create(**kwargs)
         raw = strip_think_tags(response.choices[0].message.content or "").strip().strip('"')
         # Hard brevity guard: a verbose model still gets clipped to one sentence so the journal
         # can't bloat regardless of how the model ignores the instruction.
@@ -844,6 +1021,11 @@ def log_decision(entry: dict, context: list[str], choices: list[dict],
             "decision_type": entry.get("decision_type", ""),
             "choices":       choices,
             "choice_index":  index,
+            # Multi-select pages commit a set; `index` is only its first element, so the panel
+            # needs the whole thing to mark every chosen option. `is None` keeps a deliberate
+            # empty set empty — see the TXT render below.
+            "choice_indices": (entry.get("choice_indices")
+                               if entry.get("choice_indices") is not None else [index]),
             "reasoning":     reasoning,
             "prompt_tokens": entry.get("prompt_tokens", 0),
             "completion_tokens": entry.get("completion_tokens", 0),
@@ -879,12 +1061,17 @@ def log_decision(entry: dict, context: list[str], choices: list[dict],
         _write_txt("\n" + "\n".join(new_lines) + "\n")
 
     # Multi-select decisions mark every chosen option; single-select falls back to [index].
-    sel = entry.get("choice_indices") or [index]
+    # `is None` rather than `or`: an empty set is a real answer ("select nothing"), and treating
+    # it as missing would fall back to [index] — which is 0 for an empty set — and print a → next
+    # to an option the model never picked.
+    sel = entry.get("choice_indices")
+    if sel is None:
+        sel = [index]
     arrow_choices = "\n".join(
         f"  {'→' if c['index'] in sel else ' '} {c['index']}. {c['text']}"
         for c in choices
     )
-    chosen_text = ", ".join(choices[i]["text"] for i in sel if i < len(choices)) or "?"
+    chosen_text = ", ".join(choices[i]["text"] for i in sel if i < len(choices)) or "(none selected)"
     _write_txt(f"\n{arrow_choices}\n")
     _write_txt(f"\n[{DISPLAY_NAME}] → {chosen_text}\n")
     if reasoning:
@@ -961,13 +1148,20 @@ def _restore_resume_context():
     Runs after memory is loaded so context_budget() reflects the real memory cost. The
     server-side window (_prev_context) and the panel transcript are populated; the C#
     plugin seeds its own _context from GET /resume.
+
+    _fragment_context is deliberately NOT seeded, though it is fed from the same diff during
+    normal play. It is the span the next memory entry summarises, and everything restored here
+    has already been summarised: memory.txt was just restored from the snapshot taken at this
+    very checkpoint. Seeding it made the first post-resume checkpoint summarise the whole
+    restored window — many turns of committed history — into one entry stamped with the current
+    turn, duplicating memory the run already had and reading as if the turn contained all of it.
+    The replay starts from the autosave ≡ this checkpoint, so the next fragment starts empty.
     """
     if not _resuming:
         return
     restored = _restore_context_from_jsonl(_jsonl_path)
     if restored:
         _prev_context.extend(restored)
-        _fragment_context.extend(restored)
         _panel_append(restored)
     print(f"[run] Restored {len(restored)} context lines (through last checkpoint).", flush=True)
 
@@ -1022,7 +1216,8 @@ def select_reports(reports_str: str) -> str:
 def build_prompt(decision_type: str, context: list[str], choices: list[dict],
                  stats: str = "", codex_refs: list[str] = None, phase: str = "main",
                  news: str = "", reports: str = "", economy: str = "",
-                 min_select: int = 0, max_select: int = 1, question: str = "") -> str:
+                 min_select: int = 0, max_select: int = 1, question: str = "",
+                 turn: int = 0) -> str:
     trimmed      = trim_context(context, context_budget(phase))
     dropped      = len(context) - len(trimmed)
     prefix       = f"({dropped} older lines omitted)\n" if dropped else ""
@@ -1134,6 +1329,7 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
     # enforcement the grammar emits properties in that order, so an example in any other order
     # primes a shape the model is then forbidden from producing — it plans its answer around the
     # example and gets masked into the schema's order token by token.
+    note = ""
     if max_select > 1:
         if min_select >= max_select:
             count_phrase = f"exactly {max_select}"
@@ -1142,6 +1338,14 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
         else:
             count_phrase = f"between {min_select} and {max_select}"
         instruction = f"Select {count_phrase} of the following options, choosing the best combination"
+        # "up to N" permits zero but only states a ceiling, and a model reading it as a quota
+        # picks something rather than nothing. Where the page's minimum really is zero, abstaining
+        # is a legal answer worth saying outright — along with the exact token that expresses it,
+        # since an empty list is easy to intend and impossible to guess. Sits after the options
+        # and against the format line: it is a statement about how to answer, not a fourth option.
+        if min_select <= 0:
+            note = ('Selecting none of them is also valid. If no option should be enacted, '
+                    'return an empty list: "choice_indices": []\n\n')
         fmt = (f'Respond with JSON only: {{{think_field}'
                f'"choice_indices": [N, ...], "reasoning": "{reasoning_hint}"}}')
     else:
@@ -1160,9 +1364,11 @@ def build_prompt(decision_type: str, context: list[str], choices: list[dict],
     ask = f"The decision in front of you now:\n{question.strip()}\n\n" if question else ""
 
     return (
-        "\n\n".join(sections) + "\n\n"
+        f"Current turn: {turn} / 11\n\n"
+        + "\n\n".join(sections) + "\n\n"
         + ask
         + f"{instruction}:\n{choices_text}\n\n"
+        + note
         + fmt
     )
 
@@ -1280,10 +1486,17 @@ def parse_multi_response(content: str, num_choices: int,
 
     Returns (indices, reasoning, ok). `ok` is False when nothing usable could be extracted (no
     JSON indices and no bare numbers) — the caller uses that to re-query the LLM. The min_sel
-    padding still runs on failure so the page can always be submitted as a last resort."""
+    padding still runs on failure so the page can always be submitted as a last resort.
+
+    An explicitly empty `choice_indices: []` is a deliberate "select nothing" — a legal answer on
+    a page with min_sel == 0 — and is reported as ok. It must not reach the bare-integer fallback
+    below: that scans the reply text, which still holds `reasoning` prose, so a refusal like
+    "none of these warrant Article 2 powers" would have its digits mined into a selection the
+    model never made. (When min_sel > 0 the padding below still fills the set.)"""
     clean = strip_think_tags(content)
     indices: list[int] = []
     reasoning = ""
+    explicit_empty = False
     match = re.search(r"\{.*\}", clean, re.DOTALL)
     if match:
         try:
@@ -1291,6 +1504,9 @@ def parse_multi_response(content: str, num_choices: int,
             raw = data.get("choice_indices", data.get("choice_index", []))
             if not isinstance(raw, list):
                 raw = [raw]
+            # Only an empty list the model actually sent counts — not the [] default above, which
+            # would make a reply carrying neither key look like an intentional empty selection.
+            explicit_empty = "choice_indices" in data and raw == []
             for v in raw:
                 try:
                     iv = _coerce_index(v)
@@ -1301,14 +1517,14 @@ def parse_multi_response(content: str, num_choices: int,
             reasoning = str(data.get("reasoning", "")).strip()
         except (json.JSONDecodeError, ValueError, TypeError, IndexError):
             pass
-    if not indices:
+    if not indices and not explicit_empty:
         # Fallback: pull any bare integers out of the raw text, minus the thinking scratchpad —
         # its prose is full of digits that would otherwise be read as selections.
         for d in re.findall(r"\d+", strip_thinking_member(clean)):
             iv = int(d)
             if 0 <= iv < num_choices and iv not in indices:
                 indices.append(iv)
-    ok = bool(indices)
+    ok = bool(indices) or explicit_empty
     if max_sel > 0 and len(indices) > max_sel:
         indices = indices[:max_sel]
     if min_sel > 0 and len(indices) < min_sel:
@@ -1434,8 +1650,11 @@ def _decision_impl(data, request_id):
 
     # Draft the Presidential Manifesto at the prologue→turn-1 boundary: the first phase=main
     # AI decision. Synchronous so the manifesto is present for this very decision.
+    # Never in "human" mode: an empty manifesto.txt means the author hasn't written one, not
+    # that the AI should write one for them.
     global _manifesto_busy
-    if MANIFESTO_ENABLED and phase != "prologue" and not _manifesto and not _manifesto_busy:
+    if MANIFESTO_ENABLED and not MANIFESTO_AUTHORED and phase != "prologue" \
+            and not _manifesto and not _manifesto_busy:
         _manifesto_busy = True
         try:
             _draft_manifesto(context, turn, stats or _last_stats)
@@ -1445,7 +1664,7 @@ def _decision_impl(data, request_id):
         # (system_prompt was computed above, before the draft).
         system_prompt = _effective_system_prompt(phase)
 
-    prompt = build_prompt(decision_type, context, choices, stats, codex_refs, phase, news, reports, economy, min_select, max_select, question)
+    prompt = build_prompt(decision_type, context, choices, stats, codex_refs, phase, news, reports, economy, min_select, max_select, question, turn)
 
     try:
         kwargs = dict(
@@ -1467,13 +1686,20 @@ def _decision_impl(data, request_id):
                 kwargs["response_format"] = fmt
 
         global _last_prompt_tokens, _last_completion_tokens, _last_raw_request
+        global _last_gen_seconds, _last_tok_per_sec
         _last_raw_request = dict(kwargs)
 
         # Re-query the LLM when its reply has no extractable choice (invalid/absent JSON, no bare
-        # number). Token counts below reflect the final (successful or last) attempt.
+        # number). Token counts and timing below reflect the final (successful or last) attempt.
         prompt_tokens = compl_tokens = 0
+        gen_seconds = 0.0
         for attempt in range(PARSE_RETRIES + 1):
-            response = llm.chat.completions.create(**kwargs)
+            # Timer inside the lock: exclude any wait for an in-flight background summary so
+            # gen_seconds is pure generation time and the tok/s gauge stays accurate.
+            with _llm_lock:
+                _t0 = time.perf_counter()
+                response = llm.chat.completions.create(**kwargs)
+                gen_seconds = time.perf_counter() - _t0
             content  = response.choices[0].message.content or ""
             usage    = response.usage
             if usage:
@@ -1494,8 +1720,11 @@ def _decision_impl(data, request_id):
             _last_stats = stats
         _last_prompt_tokens     = prompt_tokens
         _last_completion_tokens = compl_tokens
+        _last_gen_seconds       = gen_seconds
+        _last_tok_per_sec       = (compl_tokens / gen_seconds) if (gen_seconds > 0 and compl_tokens) else 0.0
 
-        print(f"\n[{DISPLAY_NAME}] Turn {turn} / {decision_type}  [{prompt_tokens} in / {compl_tokens} out]", flush=True)
+        tps_note = f" @ {_last_tok_per_sec:.1f} tok/s" if _last_tok_per_sec else ""
+        print(f"\n[{DISPLAY_NAME}] Turn {turn} / {decision_type}  [{prompt_tokens} in / {compl_tokens} out{tps_note}]", flush=True)
         if multi:
             chosen_list = ", ".join(f"{i}: {choices[i]['text']}" for i in indices if i < len(choices))
             print(f"  → [{chosen_list}]", flush=True)
@@ -1522,7 +1751,10 @@ def _decision_impl(data, request_id):
             "completion_tokens": compl_tokens,
         }
         log_decision(entry, context, choices, index, reasoning)
-        chosen_desc = choices[index]["text"] if index < len(choices) else "?"
+        # `indices` is the full committed set (just [index] for single-select), so a multi-select
+        # page reports every option it checked rather than only the first.
+        chosen_desc = (", ".join(choices[i]["text"] for i in indices if i < len(choices))
+                       or "(none selected)")
         _log_activity("decision", desc=f"Turn {turn} · {decision_type} → {chosen_desc[:60]}")
 
         # No per-decision memory write: facts now live in the ledger (journal), and Anton's
@@ -1624,10 +1856,15 @@ def checkpoint():
 
     # Revise the manifesto once per turn (major-turn cadence): only when the turn has advanced
     # past the last draft/revision and a manifesto exists. The checkpoint worker does it after
-    # the memory summary so the snapshot captures both.
-    revise = MANIFESTO_ENABLED and bool(_manifesto) and turn > _manifesto_turn
-    if revise:
-        _manifesto_turn = turn
+    # the memory summary so the snapshot captures both. In "human" mode the AI never revises —
+    # the checkpoint is instead where an edited manifesto.txt is picked up.
+    if MANIFESTO_AUTHORED:
+        _reload_authored_manifesto(turn)
+        revise = False
+    else:
+        revise = MANIFESTO_ENABLED and bool(_manifesto) and turn > _manifesto_turn
+        if revise:
+            _manifesto_turn = turn
 
     # Generate the fragment memory (+ optional manifesto revision), then snapshot for resume.
     threading.Thread(
@@ -1651,6 +1888,7 @@ def health():
         "model":          DISPLAY_NAME,
         "started_at":     _SERVER_START.isoformat(timespec="seconds"),
         "uptime_seconds": int(uptime),
+        "viewers":        _viewer_count(),
     })
 
 
@@ -1754,12 +1992,17 @@ def resume():
 def get_manifesto():
     with _manifesto_lock:
         text = _manifesto
-    return jsonify({"manifesto": text, "turn": _manifesto_turn, "enabled": MANIFESTO_ENABLED})
+    return jsonify({"manifesto": text, "turn": _manifesto_turn,
+                    "enabled": MANIFESTO_ENABLED, "mode": MANIFESTO_MODE})
 
 
 @app.delete("/manifesto")
 def delete_manifesto():
     global _manifesto, _manifesto_turn
+    # Clearing is an AI-mode affordance (wipe the plan so it gets redrafted). In "human" mode
+    # there is nothing to redraft and the only copy lives in the author's file — refuse.
+    if MANIFESTO_AUTHORED:
+        return jsonify({"ok": False, "error": "manifesto_mode is 'human' — edit manifesto.txt instead"}), 409
     with _manifesto_lock:
         _manifesto = ""
         _manifesto_turn = 0
@@ -1805,6 +2048,8 @@ def context():
         "context":                _panel_context,
         "last_prompt_tokens":     _last_prompt_tokens,
         "last_completion_tokens": _last_completion_tokens,
+        "last_gen_seconds":       round(_last_gen_seconds, 2),
+        "last_tok_per_sec":       round(_last_tok_per_sec, 1),
         "max_tokens":             MAX_TOKENS,
         "context_window":         CONTEXT_WINDOW,
         "context_budget":         context_budget("main"),
@@ -1866,6 +2111,35 @@ def _is_remote_view() -> bool:
     return any(h in request.headers for h in _CLOUDFLARE_MARKERS)
 
 
+# ── Remote viewer presence ────────────────────────────────────────────────────
+# The panel polls (no persistent socket), so "connected" = polled recently. Key on
+# Cf-Connecting-Ip, which only tunnel traffic carries — the game and a local browser reach
+# the server directly and are never counted. The window spans a few of the remote view's
+# master-poll intervals so a viewer sitting between polls isn't dropped, while a closed tab
+# ages out within a poll or two. Viewers behind one NAT'd IP collapse to a single count.
+_REMOTE_MASTER_POLL_S = 3.0 * REMOTE_POLL_SCALE   # mirrors panel.html MASTER_INTERVAL (remote)
+VIEWER_TTL            = max(30.0, _REMOTE_MASTER_POLL_S * 2.5)
+_viewers: dict[str, float] = {}   # Cf-Connecting-Ip → last-seen epoch seconds
+_viewers_lock = threading.Lock()
+
+
+def _touch_viewer():
+    ip = request.headers.get("Cf-Connecting-Ip")
+    if not ip:
+        return
+    with _viewers_lock:
+        _viewers[ip] = time.time()
+
+
+def _viewer_count() -> int:
+    cutoff = time.time() - VIEWER_TTL
+    with _viewers_lock:
+        stale = [ip for ip, seen in _viewers.items() if seen < cutoff]
+        for ip in stale:
+            del _viewers[ip]
+        return len(_viewers)
+
+
 @app.before_request
 def _guard_remote_view():
     if _is_remote_view():
@@ -1873,6 +2147,7 @@ def _guard_remote_view():
             return "Remote access is disabled.", 403
         if request.method != "GET" or request.path not in _REMOTE_READ_PATHS:
             return "This is a read-only view.", 403
+        _touch_viewer()   # counts only allowed remote reads (the panel's polls)
 
 
 @app.get("/")
@@ -1920,7 +2195,8 @@ def ask():
         if ENABLE_THINKING:
             kwargs["extra_body"] = {"enable_thinking": True}
 
-        response = llm.chat.completions.create(**kwargs)
+        with _llm_lock:
+            response = llm.chat.completions.create(**kwargs)
         content  = strip_think_tags(response.choices[0].message.content or "")
         usage    = response.usage
         return jsonify({

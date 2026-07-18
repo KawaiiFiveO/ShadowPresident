@@ -24,3 +24,7 @@ CLAUDE.md
 .mcp.json
 .claude/
 .editorconfig
+
+# Ignore pycache
+__pycache__/
+*.pyc

@@ -52,6 +52,7 @@ public class BillDriver : MonoBehaviour
         AIClient.AddContext("Bill for decision", $"{_pendingBillTitle} — {desc}");
 
         var choices = new List<(int, string)> { (0, $"Sign: {_pendingBillTitle}"), (1, $"Veto: {_pendingBillTitle}") };
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         _aiTask = Task.Run(() => AIClient.RequestDecision("bill", choices));
     }

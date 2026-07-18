@@ -257,6 +257,7 @@ public class DecisionDriver : MonoBehaviour
                 string contextLabel = string.IsNullOrWhiteSpace(panelDesc) ? panelTitle : $"{panelTitle}: {panelDesc}";
                 AIClient.AddContext("Event", contextLabel);
             }
+            GameState.EnsureRead();
             AIOverlay.ShowThinking();
             _decisionAiTask = Task.Run(() => AIClient.RequestDecision("decision_panel", choices));
         }

@@ -23,24 +23,37 @@ public class GraphReader : MonoBehaviour
 {
     public GraphReader(IntPtr ptr) : base(ptr) { }
 
-    private float _nextReadTime = 0f;
+    private static float _nextReadTime = 0f;
     private const float ReadInterval = 30f;
+
+    // The panels carry no data until a save is loaded. Retry soon rather than waiting out the full
+    // interval, so the trajectories are populated before the first decision.
+    private const float RetryInterval = 2f;
 
     // Number of trailing points to show per series — enough to read a trend without bloat.
     private const int TrailPoints = 6;
 
-    void Update()
+    // Immediate synchronous read, for GameState.EnsureRead() before a driver dispatches a decision.
+    // Main thread only — it walks Il2Cpp lists.
+    internal static bool ReadNow()
     {
-        float now = Time.time;
-        if (now < _nextReadTime) { return; }
-        _nextReadTime = now + ReadInterval;
-        ReadGraphs();
+        bool ok = ReadGraphs();
+        _nextReadTime = Time.time + (ok ? ReadInterval : RetryInterval);
+        return ok;
     }
 
-    private unsafe void ReadGraphs()
+    void Update()
+    {
+        if (Time.time < _nextReadTime) { return; }
+        bool ok = ReadGraphs();
+        _nextReadTime = Time.time + (ok ? ReadInterval : RetryInterval);
+    }
+
+    // Returns true when at least one graph panel yielded a series.
+    private static unsafe bool ReadGraphs()
     {
         var graphs = EntityDataManager.GraphPanelData;
-        if (graphs == null) { return; }
+        if (graphs == null) { return false; }
 
         var lines = new List<string>();
 
@@ -65,7 +78,7 @@ public class GraphReader : MonoBehaviour
         if (lines.Count == 0)
         {
             Plugin.Log.LogInfo("[GraphReader] No graph panels with data yet.");
-            return;
+            return false;
         }
 
         string result = string.Join("\n", lines);
@@ -77,6 +90,8 @@ public class GraphReader : MonoBehaviour
         {
             Plugin.Log.LogInfo($"[GraphReader]   {line}");
         }
+
+        return true;
     }
 
     // "12 -> 15 -> 14 (now 14, chg -1)" — last TrailPoints values plus the latest reading and the

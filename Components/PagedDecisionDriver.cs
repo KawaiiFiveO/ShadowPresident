@@ -94,6 +94,7 @@ public class PagedDecisionDriver : MonoBehaviour
 
             string pageTitle = ReadTMP(page.Pointer + 0x40);
             string pageDesc = ReadTMP(page.Pointer + 0x48);
+            bool pageDescIsFallback = false;
 
             // Some pages carry no per-page title/description — notably the Turn-1 term-focus
             // carousel, whose options are self-describing policy areas. Left blank, the model is
@@ -103,14 +104,18 @@ public class PagedDecisionDriver : MonoBehaviour
             if (string.IsNullOrWhiteSpace(pageTitle))
             {
                 pageTitle = ReadTMP(_panel.Pointer + 0x28);
-                if (string.IsNullOrWhiteSpace(pageDesc)) { pageDesc = ReadTMP(_panel.Pointer + 0x30); }
+                if (string.IsNullOrWhiteSpace(pageDesc))
+                {
+                    pageDesc = ReadTMP(_panel.Pointer + 0x30);
+                    pageDescIsFallback = true;
+                }
             }
 
             nint carouselDataPtr = *(nint*)(page.Pointer + 0x90);
             nint multiDataPtr = *(nint*)(page.Pointer + 0x98);
 
             if (carouselDataPtr != 0)
-                ProcessCarouselPage(page, pageTitle, pageDesc);
+                ProcessCarouselPage(page, pageTitle, pageDesc, pageDescIsFallback);
             else if (multiDataPtr != 0)
                 ProcessMultiPage(page, pageTitle, pageDesc);
             else
@@ -121,7 +126,7 @@ public class PagedDecisionDriver : MonoBehaviour
         }
     }
 
-    private unsafe void ProcessCarouselPage(TemplatePagedDecisionsPage page, string pageTitle, string pageDesc)
+    private unsafe void ProcessCarouselPage(TemplatePagedDecisionsPage page, string pageTitle, string pageDesc, bool pageDescIsFallback)
     {
         nint carouselPtr = *(nint*)(page.Pointer + 0x50);
         if (carouselPtr == 0) { SetAdvanceTimer(); return; }
@@ -166,7 +171,14 @@ public class PagedDecisionDriver : MonoBehaviour
         string sharedDesc = SharedDescription(descs);
         if (sharedDesc != null && !pageDesc.Contains(sharedDesc))
         {
-            pageDesc = string.IsNullOrWhiteSpace(pageDesc) ? sharedDesc : $"{pageDesc} {sharedDesc}";
+            // On a multi-branch budget panel each branch is its own page with no per-page
+            // description, so pageDesc here is the panel-level fallback rubric — identical on
+            // every branch (see ProcessPage). The per-branch situation lives in the shared option
+            // description; use it alone so the ~55-word rubric isn't restated on every branch's
+            // question and settled context line. When pageDesc is a genuine per-page description,
+            // keep it and append the shared option text as before.
+            if (pageDescIsFallback) { pageDesc = sharedDesc; }
+            else { pageDesc = string.IsNullOrWhiteSpace(pageDesc) ? sharedDesc : $"{pageDesc} {sharedDesc}"; }
         }
 
         var options = new List<(int, string)>(total);
@@ -194,6 +206,7 @@ public class PagedDecisionDriver : MonoBehaviour
         }
 
         _pendingQuestion = string.IsNullOrWhiteSpace(pageDesc) ? pageTitle : $"{pageTitle}: {pageDesc}";
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         _pendingOptions = new List<(int, string)>(options);
         var question = _pendingQuestion;
@@ -221,8 +234,15 @@ public class PagedDecisionDriver : MonoBehaviour
         }
 
         // Radio (single-choice) vs checkbox: MultipleChoicePageProperties at
-        // page.currentMultipleChoicePageData (+0x98) → properties (+0x38). MaximumChoiceCount at
-        // +0x24 (max <= 1 ⇒ radio), MinimumChoiceCount at +0x20.
+        // page.currentMultipleChoicePageData (+0x98) → properties (+0x38). MinimumChoiceCount at
+        // +0x20, MaximumChoiceCount at +0x24.
+        //
+        // Radio is max == 1 *exactly*, mirroring the game's own IsRadioMultipleChoice. A negative
+        // max is the unlimited sentinel, not a tighter bound: IsAtMaximumChoicesSelected reports
+        // "never at maximum" for `max == 1 || max < 0`, and GetChoiceAmountText renders max == -1
+        // as "any number" (min 0) or "at least N" (min > 0). The Emergency Act sections ship
+        // max == -1, so testing `max <= 1` classified them as radio and asked the AI for exactly
+        // one target per section when the panel accepts a set.
         bool isRadio = true;
         int minChoices = 1, maxChoices = 1;
         nint pageDataPtr = *(nint*)(page.Pointer + 0x98);
@@ -233,16 +253,23 @@ public class PagedDecisionDriver : MonoBehaviour
             {
                 minChoices = *(int*)(propsPtr + 0x20);
                 maxChoices = *(int*)(propsPtr + 0x24);
-                isRadio = maxChoices <= 1;
+                isRadio = maxChoices == 1;
             }
         }
+
+        // Bounds handed to the AI: unlimited (max < 0) means every option on the page is fair
+        // game, and a negative/unset minimum floors at zero. Both are clamped to what the page
+        // actually shows so the requested set can always be satisfied.
+        int selMin = Math.Max(0, minChoices);
+        int selMax = maxChoices < 0 ? count : Math.Min(maxChoices, count);
+        selMin = Math.Min(selMin, selMax);
 
         _pendingMultiOptions = optionRefs;
         _pendingMultiIsRadio = isRadio;
         _pendingCarousel = null;
 
-        bool multiSelect = !isRadio && maxChoices > 1;
-        string kind = isRadio ? "radio" : (multiSelect ? $"checkbox, select {minChoices}-{maxChoices}" : "checkbox");
+        bool multiSelect = !isRadio && selMax > 1;
+        string kind = isRadio ? "radio" : (multiSelect ? $"checkbox, select {selMin}-{selMax}" : "checkbox");
         Plugin.Log.LogInfo($"[PagedDecisionDriver] MultiChoice: \"{pageTitle}\" — {count} options ({kind})");
         foreach (var (i, t) in options) { Plugin.Log.LogInfo($"  [{i}] {t}"); }
 
@@ -255,15 +282,16 @@ public class PagedDecisionDriver : MonoBehaviour
         }
 
         _pendingQuestion = string.IsNullOrWhiteSpace(pageDesc) ? pageTitle : $"{pageTitle}: {pageDesc}";
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         _pendingOptions = new List<(int, string)>(options);
         var question = _pendingQuestion;
 
         if (multiSelect)
         {
-            // Checkbox page (e.g. emergency decrees): the AI picks a set within [min, max].
-            int min = Math.Max(0, minChoices);
-            int max = Math.Min(maxChoices, count);
+            // Checkbox page (e.g. the Emergency Act sections): the AI picks a set within
+            // [selMin, selMax] — already resolved against the unlimited sentinel above.
+            int min = selMin, max = selMax;
             _aiMultiTask = Task.Run(() => AIClient.RequestMultiDecision("paged_decision", _pendingOptions, min, max, question));
         }
         else
@@ -324,14 +352,17 @@ public class PagedDecisionDriver : MonoBehaviour
         AIOverlay.ShowReasoning(result.Value.reasoning);
 
         var indices = result.Value.indices ?? new List<int>();
-        if (_pendingOptions != null && indices.Count > 0)
+        if (_pendingOptions != null)
         {
             var labels = new List<string>(indices.Count);
             foreach (int i in indices)
             {
                 if (i >= 0 && i < _pendingOptions.Count) { labels.Add(_pendingOptions[i].Item2); }
             }
-            if (labels.Count > 0) { RecordSettled(string.Join("; ", labels)); }
+            // Selecting nothing is a legal answer on a min-0 page, and it still has to settle the
+            // pair: skipping RecordSettled would drop this page's question from the rolling
+            // context entirely, so the run's history would show the panel never asked.
+            RecordSettled(labels.Count > 0 ? string.Join("; ", labels) : "(none selected)");
         }
 
         if (_pendingMultiOptions != null)

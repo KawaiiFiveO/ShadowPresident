@@ -22,14 +22,34 @@ public class PrologueEpilogueDriver : MonoBehaviour
     private List<Response> _pendingResponses;
     private Task<(int index, string reasoning)?> _aiTask;
 
+    // Game-over tracking: once the epilogue conversation has run, its end is the end of the game.
+    private bool _epilogueRan = false;
+    private bool _gameOver    = false;
+
     void Update()
     {
         if (!Plugin.AutomationEnabled) { return; }
 
         if (_panel == null) { _panel = FindObjectOfType<PrologueEpiloguePanel>(); }
+        if (_panel == null) { return; }
 
-        if (_panel == null || !_panel.IsShowing()) { return; }
-        if (!DialogueManager.isConversationActive) { return; }
+        bool showing    = _panel.IsShowing();
+        bool convActive = DialogueManager.isConversationActive;
+        bool epilogue   = showing && _panel.State == PrologueEpiloguePanel.PrologueEpilogueState.Epilogue;
+
+        // Remember that the epilogue has actually been playing, so we only treat a conversation
+        // end as game-over after the epilogue has genuinely run (not before it starts).
+        if (epilogue && convActive) { _epilogueRan = true; }
+
+        // The epilogue conversation has ended — the game is over. Capture the final on-screen
+        // line, disable automation, and stop.
+        if (_epilogueRan && !_gameOver && !convActive)
+        {
+            HandleGameOver();
+            return;
+        }
+
+        if (!showing || !convActive) { return; }
 
         if (_handler == null) { _handler = FindObjectOfType<ConversationHandler>(true); }
 
@@ -103,6 +123,9 @@ public class PrologueEpilogueDriver : MonoBehaviour
 
         _pendingResponses = enabled;
         AIClient.CurrentPhase = _panel.State == PrologueEpiloguePanel.PrologueEpilogueState.Epilogue ? "epilogue" : "prologue";
+        // No-op during the prologue (no HUD to read, and the server blanks the state blocks for
+        // that phase anyway); the epilogue does ship state, so keep the call unconditional.
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         _aiTask = Task.Run(() => AIClient.RequestDecision("dialogue", choices));
     }
@@ -127,6 +150,45 @@ public class PrologueEpilogueDriver : MonoBehaviour
         AIClient.CurrentPhase = "main";
         int idx = Math.Max(0, Math.Min(result.Value.index, pending.Count - 1));
         SelectResponse(pending[idx], result.Value.reasoning);
+    }
+
+    // The epilogue has finished — this is the end of the game. Capture whatever line is still on
+    // screen (the closing line often displays with no further advance to log it), record it, then
+    // disable automation so nothing else runs.
+    private void HandleGameOver()
+    {
+        _gameOver = true;
+
+        try
+        {
+            unsafe
+            {
+                nint uiPtr = _panel != null ? *(nint*)(_panel.Pointer + 0x30) : 0;
+                if (uiPtr != 0)
+                {
+                    string text = ReadSubtitleText(uiPtr);
+                    if (!string.IsNullOrWhiteSpace(text) && text != _lastSubtitleText)
+                    {
+                        _lastSubtitleText = text;
+                        string stripped = ConversationLinePatch.StripTags(text);
+                        if (!string.IsNullOrWhiteSpace(stripped))
+                        {
+                            Plugin.Log.LogInfo($"[Dialogue] Narrator: {stripped}");
+                            AIClient.AddContext("Narrator", stripped);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[PrologueEpilogueDriver] Failed to capture final epilogue line: {ex.GetBaseException().Message}");
+        }
+
+        Plugin.Log.LogInfo("[PrologueEpilogueDriver] Epilogue finished — game over. Disabling automation.");
+        AIClient.AddContext("[END]", "The epilogue has ended. The game is over.");
+        Plugin.AutomationEnabled = false;
+        Plugin.SafeStopPending = false;
     }
 
     private void SelectResponse(Response chosen, string reasoning, bool isRealChoice = true)

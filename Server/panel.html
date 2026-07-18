@@ -110,6 +110,55 @@ button { cursor: pointer; font-family: inherit; }
 }
 .mast-btn:hover { border-color: var(--gold-dim); color: var(--gold); }
 .mast-btn.danger:hover { border-color: #800; color: #e05050; background: #1e0808; }
+.mast-btn.active { border-color: var(--gold-dim); color: var(--gold); background: rgba(200,169,110,0.10); }
+
+/* ── Decorative generation-speed gauge (off by default; toggled from the masthead,
+      state persisted in localStorage). Purely a client-side visualization of the
+      last decision's tok/s reported on /context — no server involvement. ───────── */
+#gauge {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  width: 190px;
+  padding: 9px 12px 7px;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  display: none;
+  user-select: none;
+}
+#gauge.on { display: block; }
+#gauge .g-title {
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+  opacity: 0.75;
+  text-align: center;
+  margin-bottom: 1px;
+}
+#gauge svg { display: block; width: 100%; height: auto; }
+#gauge .g-read {
+  text-align: center;
+  font-family: 'Source Code Pro', monospace;
+  margin-top: -8px;
+}
+#gauge .g-val  { font-size: 20px; font-weight: 500; color: var(--gold-pale); }
+#gauge .g-unit { font-size: 10px; color: var(--text-dim); margin-left: 3px; }
+#gauge .g-delta { font-size: 10px; margin-top: 1px; min-height: 12px; }
+#gauge .g-delta.up   { color: var(--teal); }
+#gauge .g-delta.down { color: var(--red); }
+#gauge .g-delta.flat { color: var(--text-dim); }
+.g-arc-track { fill: none; stroke: var(--border2);  stroke-width: 10; stroke-linecap: round; }
+.g-arc-val   { fill: none; stroke: var(--gold);      stroke-width: 10; stroke-linecap: round; transition: stroke 0.3s; }
+.g-tick       { stroke: var(--text-mute); stroke-width: 1.5; }
+.g-tick-label { fill: var(--text-dim); font-family: 'Source Code Pro', monospace; font-size: 9px; text-anchor: middle; }
+.g-needle     { stroke: var(--gold-pale); stroke-width: 2.5; stroke-linecap: round; }
+.g-avg-marker { stroke: var(--gold-dim);  stroke-width: 2.5; stroke-linecap: round; opacity: 0.85; }
+.g-hub        { fill: var(--gold-dim); }
 
 /* ── Stats bar ────────────────────────────────────────────────────────────── */
 #stats-bar {
@@ -645,7 +694,8 @@ body.readonly #ask-row {          /* Ask the AI box */
 }
 
 /* Server uptime + next-refresh countdown, shown once loaded. */
-#uptime, #next-refresh { font-size: 10px; color: var(--text-mute); white-space: nowrap; flex: 0 0 auto; }
+#uptime, #next-refresh, #viewers { font-size: 10px; color: var(--text-mute); white-space: nowrap; flex: 0 0 auto; }
+#viewers:empty { display: none; }
 
 /* Connection-lost toast — fixed at the bottom so it's visible regardless of scroll.
    The page keeps its last-loaded data and stays browsable while offline. */
@@ -684,12 +734,14 @@ body.offline #dot { color: #c2453c !important; }   /* red dot while disconnected
   <div id="status">Connecting…</div>
   <span id="next-refresh" title="Time until the next context refresh"></span>
   <span id="uptime" title="Server uptime"></span>
+  <span id="viewers" title="Remote viewers connected now"></span>
   <div id="turn-chip" title="">
     <span class="tc-label">Turn</span>
     <span class="tc-num" id="turn-num">—</span>
     <span class="tc-step" id="turn-step"></span>
   </div>
   <div id="mast-btns">
+    <button class="mast-btn" id="gauge-btn" onclick="toggleGauge()" title="Show the generation-speed gauge">Gauge</button>
     <button class="mast-btn" onclick="showLastPrompt()">Last prompt</button>
     <button class="mast-btn danger" onclick="quitServer()">Quit</button>
   </div>
@@ -796,7 +848,8 @@ body.offline #dot { color: #c2453c !important; }   /* red dot while disconnected
       <div class="stack-info">
         Window <span id="s-win">—</span> &nbsp;·&nbsp;
         Last prompt <span id="s-prompt">—</span> &nbsp;·&nbsp;
-        Completion <span id="s-comp">—</span>
+        Completion <span id="s-comp">—</span> &nbsp;·&nbsp;
+        Speed <span id="s-tps">—</span>
       </div>
     </div>
 
@@ -840,6 +893,23 @@ body.offline #dot { color: #c2453c !important; }   /* red dot while disconnected
       <div id="ask-tokens"></div>
       <div id="answer"></div>
     </div>
+  </div>
+</div>
+
+<!-- Decorative generation-speed gauge (opt-in via the masthead "Gauge" button) -->
+<div id="gauge" aria-hidden="true">
+  <div class="g-title">Generation Speed</div>
+  <svg viewBox="0 0 200 118" role="img" aria-label="Tokens-per-second gauge">
+    <path class="g-arc-track" d="M 20 100 A 80 80 0 0 1 180 100"/>
+    <path class="g-arc-val" id="g-arc-val" d="M 20 100 A 80 80 0 0 1 180 100"/>
+    <g id="g-ticks"></g>
+    <line class="g-avg-marker" id="g-avg-marker" x1="0" y1="0" x2="0" y2="0" style="display:none"/>
+    <line class="g-needle" id="g-needle" x1="100" y1="100" x2="20" y2="100"/>
+    <circle class="g-hub" cx="100" cy="100" r="5"/>
+  </svg>
+  <div class="g-read">
+    <span class="g-val" id="g-val">0.0</span><span class="g-unit">tok/s</span>
+    <div class="g-delta flat" id="g-delta">—</div>
   </div>
 </div>
 
@@ -1151,10 +1221,23 @@ function renderReports(reportsStr, sentLines) {
   }
 
   // Reports the AI was actually shown this decision (random sample); the rest are dimmed.
-  const sentSet = new Set((sentLines || []).map(s => s.trim()));
-  // Match either the full raw line or the reconstructed "Title — desc" (covers single-line and
-  // multi-line grouping).
-  const matches = e => sentSet.has(e.raw) || sentSet.has(`${e.title} — ${e.desc}`.trim());
+  // Use a MULTISET (count per line), not a Set: identical duplicate reports must light up only as
+  // many times as they were actually sent. A Set collapses duplicates and text-based membership
+  // then lights every identical copy — so N sent synergy lines would light all M shown copies.
+  const sentCounts = new Map();
+  for (const s of (sentLines || [])) {
+    const k = (s || '').trim();
+    if (k) { sentCounts.set(k, (sentCounts.get(k) || 0) + 1); }
+  }
+  // Consume one count per shown copy. Match either the full raw line or the reconstructed
+  // "Title — desc" (covers single-line and multi-line grouping).
+  const matches = e => {
+    for (const k of [e.raw, `${e.title} — ${e.desc}`.trim()]) {
+      const c = sentCounts.get(k) || 0;
+      if (c > 0) { sentCounts.set(k, c - 1); return true; }
+    }
+    return false;
+  };
 
   const entries = [];
 
@@ -1207,12 +1290,16 @@ function renderReports(reportsStr, sentLines) {
     if (current) entries.push(current);
   }
 
-  // Only dim when at least one shown report matches the sent set; otherwise the window is stale
-  // and dimming everything would be misleading.
-  const dimOn = sentSet.size > 0 && entries.some(matches);
+  // matches() consumes the multiset, so run it exactly once per entry, in display order, and cache
+  // the result. Later duplicate copies fall through to dimmed once the sent count is exhausted.
+  const hadSent = sentCounts.size > 0;
+  const lit = entries.map(matches);
+  // Only dim when at least one shown report was actually sent; otherwise the window is stale and
+  // dimming everything would be misleading.
+  const dimOn = hadSent && lit.some(Boolean);
 
-  el.innerHTML = entries.map(e => {
-    const dim = dimOn && !matches(e) ? ' unsent' : '';
+  el.innerHTML = entries.map((e, i) => {
+    const dim = dimOn && !lit[i] ? ' unsent' : '';
     if (e.desc) {
       const open = _openReportKeys.has(e.title);
       return `<div class="report-entry expandable${open?' open':''}${dim}" data-key="${esc(e.title)}" onclick="toggleReportEntry(this)"><span class="report-title">${esc(e.title)}</span><div class="report-desc">${esc(e.desc)}</div></div>`;
@@ -1344,6 +1431,11 @@ async function refresh() {
     document.getElementById('s-win').textContent    = fmt(win);
     document.getElementById('s-prompt').textContent = fmt(lp);
     document.getElementById('s-comp').textContent   = fmt(lc);
+    const tps = d.last_tok_per_sec || 0;
+    const gen = d.last_gen_seconds || 0;
+    document.getElementById('s-tps').textContent =
+      tps ? `${tps.toFixed(1)} tok/s` + (gen ? ` (${gen.toFixed(1)}s)` : '') : '—';
+    updateGauge(tps, d.last_completion_tokens || 0);
 
     const dot = document.getElementById('dot');
     dot.style.color = '#5a9a5a';
@@ -1361,7 +1453,12 @@ async function refreshDecisions() {
     if (!d.decisions.length) { el.innerHTML = '<span class="ph">No decisions yet</span>'; return; }
     const top = el.scrollTop;
     el.innerHTML = d.decisions.map(dec => {
-      const ch = dec.choices.map(c => c.index === dec.choice_index
+      // Multi-select pages (Emergency Act sections) commit a set of indices; choice_index is
+      // only the first of them. Fall back to it for single-select and older buffered entries —
+      // `??`, not `||`, so a deliberate empty set (model chose nothing) stays empty rather than
+      // marking option 0. Empty arrays are truthy in JS, but don't lean on that.
+      const sel = new Set(dec.choice_indices ?? [dec.choice_index]);
+      const ch = dec.choices.map(c => sel.has(c.index)
         ? `<span class="dec-chosen">&#8594; ${c.index}. ${esc(c.text)}</span>`
         : `<span>${c.index}. ${esc(c.text)}</span>`
       ).join('<br>');
@@ -1435,12 +1532,15 @@ async function refreshManifesto() {
       if (_manifestoTimer) { clearInterval(_manifestoTimer); _manifestoTimer = null; }  // one-shot
       return;
     }
+    const human = d.mode === 'human';
     if (!d.manifesto) {
-      el.innerHTML = '<span class="ph">Not drafted yet</span>';
+      el.innerHTML = human ? '<span class="ph">No manifesto written yet…</span>'
+                           : '<span class="ph">Not drafted yet</span>';
       turnEl.textContent = '';
       return;
     }
-    turnEl.textContent = d.turn ? `Turn ${d.turn}` : '';
+    // Human-written manifestos have no turn: they are never drafted or revised per-turn.
+    turnEl.textContent = human ? 'Human-written' : (d.turn ? `Turn ${d.turn}` : '');
     const top = el.scrollTop;
     el.innerHTML = esc(d.manifesto).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
     el.scrollTop = top;
@@ -1588,10 +1688,13 @@ function fmtDur(s) {
   return `${sec}s`;
 }
 
+let _viewers = null;      // remote viewers reported by /health (null = unknown)
+
 async function fetchUptime() {
   try {
     const h = await fetch('/health').then(r => r.json());
     if (h && h.uptime_seconds != null) { _uptimeBase = h.uptime_seconds; _uptimeAt = Date.now(); }
+    if (h && h.viewers != null) { _viewers = h.viewers; }
   } catch {}
 }
 
@@ -1599,9 +1702,11 @@ function tickStatus() {
   const offline = document.body.classList.contains('offline');
   const up = document.getElementById('uptime');
   const nr = document.getElementById('next-refresh');
+  const vw = document.getElementById('viewers');
   if (offline) {
     up.textContent = '';
     nr.textContent = '';
+    vw.textContent = '';
     const ago = _lastOk ? fmtDur((Date.now() - _lastOk) / 1000) + ' ago' : 'moments ago';
     document.getElementById('conn-banner').textContent =
       `⚠ Connection lost — showing last data from ${ago}. Retrying…`;
@@ -1612,6 +1717,9 @@ function tickStatus() {
   }
   const left = Math.max(0, MASTER_INTERVAL - (Date.now() - _lastMasterFire)) / 1000;
   nr.textContent = 'next ' + Math.ceil(left) + 's';
+  if (_viewers != null) {
+    vw.textContent = '· ' + _viewers + (_viewers === 1 ? ' viewer' : ' viewers');
+  }
 }
 
 fetchUptime();
@@ -1624,6 +1732,7 @@ async function masterRefresh() {
   await Promise.all([
     refresh(),
     refreshDecisions(),
+    fetchUptime(),   // keeps uptime + remote-viewer count live each cycle
     // You can also add refreshActivity() here if you want it synced
   ]);
 }
@@ -1633,6 +1742,144 @@ masterRefresh();
 refreshMemory();
 refreshManifesto();
 refreshActivity(); // if not included above
+
+// ── Decorative generation-speed gauge ───────────────────────────────────────
+// A client-side speedometer for the last decision's tok/s. The needle eases toward
+// each new reading (smooth up AND down), and the delta below compares the newest run
+// to the trailing average of the last few — steadier and more telling than run-to-run.
+const G_CX = 100, G_CY = 100, G_NEEDLE_R = 74;   // SVG geometry (matches the arc path)
+const G_AVG_WINDOW = 5;                          // how many prior runs the delta averages over
+let   _gaugeRunning = false;
+let   gDisp = 0, gTarget = 0;                    // eased vs. target tok/s
+let   gMax = 40, gPeak = 0;                      // auto-ranged dial full-scale
+let   gArcLen = 0;                               // value-arc path length (for the fill)
+let   gSig = null;                               // (completion_tokens:tps) signature of last reading
+let   gHistory = [];                             // recent tok/s readings, newest last
+let   gAvgTarget = 0, gAvgDisp = 0, gHasAvg = false;  // trailing-average marker (the delta's baseline)
+
+// Point on the gauge arc at fraction `frac` of full-scale, at radius `r`.
+// frac 0 → left (9 o'clock), 0.5 → top (12), 1 → right (3).
+function gPt(frac, r) {
+  const ang = (180 - 180 * Math.max(0, Math.min(1, frac))) * Math.PI / 180;
+  return { x: G_CX + r * Math.cos(ang), y: G_CY - r * Math.sin(ang) };
+}
+
+// Round a peak up to a tidy dial maximum with a little headroom so the needle rarely pegs.
+function gNiceMax(v) {
+  const steps = [20, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300, 400, 500];
+  const want = v * 1.1;
+  for (const s of steps) { if (s >= want) { return s; } }
+  return Math.ceil(want / 100) * 100;
+}
+
+function gBuildTicks() {
+  const g = document.getElementById('g-ticks');
+  const NS = 'http://www.w3.org/2000/svg';
+  g.innerHTML = '';
+  for (let i = 0; i <= 4; i++) {
+    const frac = i / 4;
+    const o = gPt(frac, 80), inr = gPt(frac, 69);
+    const ln = document.createElementNS(NS, 'line');
+    ln.setAttribute('class', 'g-tick');
+    ln.setAttribute('x1', o.x.toFixed(1));   ln.setAttribute('y1', o.y.toFixed(1));
+    ln.setAttribute('x2', inr.x.toFixed(1)); ln.setAttribute('y2', inr.y.toFixed(1));
+    g.appendChild(ln);
+    const lp = gPt(frac, 57);
+    const tx = document.createElementNS(NS, 'text');
+    tx.setAttribute('class', 'g-tick-label');
+    tx.setAttribute('x', lp.x.toFixed(1));
+    tx.setAttribute('y', (lp.y + 3).toFixed(1));
+    tx.textContent = Math.round(gMax * frac);
+    g.appendChild(tx);
+  }
+}
+
+function gFrame() {
+  if (!_gaugeRunning) { return; }
+  gDisp += (gTarget - gDisp) * 0.12;                 // critically-damped-ish ease
+  if (Math.abs(gTarget - gDisp) < 0.03) { gDisp = gTarget; }
+  const frac = Math.max(0, Math.min(1, gDisp / gMax));
+  const p = gPt(frac, G_NEEDLE_R);
+  const needle = document.getElementById('g-needle');
+  needle.setAttribute('x2', p.x.toFixed(1));
+  needle.setAttribute('y2', p.y.toFixed(1));
+  const arc = document.getElementById('g-arc-val');
+  arc.style.strokeDashoffset = (gArcLen * (1 - frac)).toFixed(1);
+  // Smooth red (slow) → yellow (mid) → cyan (fast) along the dial, via HSL hue 0→180.
+  const hue = (180 * frac).toFixed(0);
+  arc.style.stroke = `hsl(${hue}, 62%, 52%)`;
+  document.getElementById('g-val').textContent = gDisp.toFixed(1);
+  // Trailing-average marker: a short radial tick straddling the arc band.
+  const marker = document.getElementById('g-avg-marker');
+  if (gHasAvg) {
+    gAvgDisp += (gAvgTarget - gAvgDisp) * 0.12;
+    const af = Math.max(0, Math.min(1, gAvgDisp / gMax));
+    const inr = gPt(af, 72), out = gPt(af, 88);
+    marker.setAttribute('x1', inr.x.toFixed(1)); marker.setAttribute('y1', inr.y.toFixed(1));
+    marker.setAttribute('x2', out.x.toFixed(1)); marker.setAttribute('y2', out.y.toFixed(1));
+    marker.style.display = '';
+  }
+  requestAnimationFrame(gFrame);
+}
+
+// Called every poll with the last decision's tok/s + completion tokens. Only a changed
+// (completion_tokens:tps) pair counts as a new generation for delta/history purposes.
+function updateGauge(tps, lc) {
+  tps = +tps || 0;
+  const sig = lc + ':' + tps;
+  if (sig !== gSig) {
+    gSig = sig;
+    const de = document.getElementById('g-delta');
+    if (tps > 0 && gHistory.length > 0) {
+      const avg = gHistory.reduce((a, b) => a + b, 0) / gHistory.length;
+      gAvgTarget = avg; gHasAvg = true;   // pin the arc marker to this baseline
+      const dv = tps - avg;
+      const n = gHistory.length;
+      if (Math.abs(dv) < 0.05) {
+        de.className = 'g-delta flat'; de.textContent = `◆ on par w/ avg (${n})`;
+      } else if (dv > 0) {
+        de.className = 'g-delta up';   de.textContent = `▲ +${dv.toFixed(1)} vs avg (${n})`;
+      } else {
+        de.className = 'g-delta down'; de.textContent = `▼ ${dv.toFixed(1)} vs avg (${n})`;
+      }
+    } else {
+      de.className = 'g-delta flat'; de.textContent = '—';
+    }
+    if (tps > 0) {
+      gHistory.push(tps);
+      if (gHistory.length > G_AVG_WINDOW) { gHistory.shift(); }
+      gPeak = Math.max(gPeak, tps);
+      const nm = gNiceMax(gPeak);
+      if (nm !== gMax) { gMax = nm; gBuildTicks(); }
+    }
+  }
+  gTarget = tps;
+}
+
+function gaugeOn(on) {
+  const el = document.getElementById('gauge');
+  el.classList.toggle('on', on);
+  el.setAttribute('aria-hidden', on ? 'false' : 'true');
+  const btn = document.getElementById('gauge-btn');
+  if (btn) { btn.classList.toggle('active', on); }
+  try { localStorage.setItem('sp_gauge', on ? '1' : '0'); } catch {}
+  if (on && !_gaugeRunning) { _gaugeRunning = true; requestAnimationFrame(gFrame); }
+  if (!on) { _gaugeRunning = false; }
+}
+function toggleGauge() {
+  gaugeOn(!document.getElementById('gauge').classList.contains('on'));
+}
+
+(function initGauge() {
+  const arc = document.getElementById('g-arc-val');
+  gArcLen = arc.getTotalLength();
+  arc.style.strokeDasharray = gArcLen;
+  arc.style.strokeDashoffset = gArcLen;   // start empty
+  gBuildTicks();
+  let saved = '0';
+  try { saved = localStorage.getItem('sp_gauge') || '0'; } catch {}
+  gaugeOn(saved === '1');
+})();
 
 // Polling cadence. Local view runs at full speed (scale 1). For the remote tunnel
 // view the server injects window.POLL_SCALE (config: remote_poll_scale) to slow it.

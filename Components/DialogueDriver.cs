@@ -112,6 +112,7 @@ public class DialogueDriver : MonoBehaviour
             choices.Add((i, ConversationLinePatch.StripTags(enabled[i].formattedText?.text ?? "")));
 
         _pendingResponses = enabled;
+        GameState.EnsureRead();
         AIOverlay.ShowThinking();
         _aiTask = Task.Run(() => AIClient.RequestDecision("dialogue", choices));
     }

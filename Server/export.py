@@ -28,6 +28,27 @@ import os
 import re
 import sys
 from datetime import datetime
+from string import Template
+
+# ── UI theme ─────────────────────────────────────────────────────────────────────
+# The primary "chrome" accent (default body text, borders, titles, glows, chart grid
+# and axis labels). Data-series colors (budget/wealth/stability) and the semantic
+# panel accents (amber/pink/red/violet) are NOT part of this and never change.
+# Pick a theme by name; add your own by dropping another entry in THEMES.
+#   fg     — bright accent: body text, borders, titles, section heads, links
+#   dim    — muted accent: secondary borders, chart axis labels
+#   dimmer — faint accent: hairline borders
+#   line   — near-black tint: gridlines
+#   glow   — fg as "R,G,B" for the rgba() box/text shadows
+THEMES = {
+    "cyan":   {"fg": "#33e9ff", "dim": "#1f8294", "dimmer": "#155563",
+               "line": "#0c2a33", "glow": "51,233,255"},
+    "purple": {"fg": "#b98bff", "dim": "#6f4fa8", "dimmer": "#896bbf",
+               "line": "#0c2a33", "glow": "185,139,255"},
+}
+THEME_NAME = "purple"
+THEME = THEMES[THEME_NAME]
+
 
 # ── decision_type → (badge label, css class) ────────────────────────────────────
 BADGE = {
@@ -168,20 +189,29 @@ def render_decision(o, player_name, idx):
     ci = o.get("choice_index")
     is_human = str(o.get("model_name")) == "human"
 
-    chosen_txt = ""
+    # Multi-select pages (the Emergency Act sections) mark every chosen option; single-select
+    # falls back to [choice_index]. Same convention as log_decision's transcript rendering.
+    # `is None` rather than `or`: an empty set means the model deliberately picked nothing, and
+    # falling back to [choice_index] (0 for an empty set) would mark an option it never chose.
+    sel = o.get("choice_indices")
+    if sel is None:
+        sel = [ci] if ci is not None else []
+
+    chosen_parts = []
     opt_items = []
     for c in choices:
         txt = clean(c.get("text", ""))
-        chosen = (c.get("index") == ci)
+        chosen = (c.get("index") in sel)
         if chosen:
-            chosen_txt = txt
+            chosen_parts.append(txt)
         mark = "▶" if chosen else "·"
         ocls = "opt chosen" if chosen else "opt"
         opt_items.append(f'<li class="{ocls}"><span class="mk">{mark}</span>'
                          f'<span class="ot">{esc(txt)}</span></li>')
-    if not opt_items and ci is not None:
+    chosen_txt = "; ".join(chosen_parts)
+    if not opt_items and sel:
         opt_items.append(f'<li class="opt chosen"><span class="mk">▶</span>'
-                         f'<span class="ot">[choice #{esc(str(ci))}]</span></li>')
+                         f'<span class="ot">[choice #{esc(", ".join(str(i) for i in sel))}]</span></li>')
 
     reasoning = clean(o.get("reasoning", ""))
     ptok = o.get("prompt_tokens") or 0
@@ -475,8 +505,8 @@ def render_economy_chart(series):
     def sy(v):
         return y1 - (v - vmin) / (vmax - vmin) * plotH
 
-    grid = "#0c2a33"
-    dim = "#155563"
+    grid = THEME["line"]
+    dim = THEME["dimmer"]
     series_defs = [
         ("budget",    "Gov. Budget",         "#ffb000"),
         ("wealth",    "Personal Wealth",     "#36ffc2"),
@@ -500,7 +530,7 @@ def render_economy_chart(series):
             o.append(f'<line x1="{x0}" y1="{gy:.1f}" x2="{x1}" y2="{gy:.1f}" '
                      f'stroke="{"#3a1f60" if is_zero else grid}" '
                      f'stroke-width="{"1.5" if is_zero else "1"}"/>')
-            o.append(f'<text x="{x0-8}" y="{gy+3:.1f}" text-anchor="end" fill="#1f8294" '
+            o.append(f'<text x="{x0-8}" y="{gy+3:.1f}" text-anchor="end" fill="{THEME["dim"]}" '
                      f'{fm} font-size="10">{tick}</text>')
         tick += step
 
@@ -512,7 +542,7 @@ def render_economy_chart(series):
             gx = sx(i)
             o.append(f'<line x1="{gx:.1f}" y1="{y0}" x2="{gx:.1f}" y2="{y1}" '
                      f'stroke="{grid}" stroke-width="1" stroke-dasharray="2 4"/>')
-            o.append(f'<text x="{gx:.1f}" y="{y1+14}" text-anchor="middle" fill="#1f8294" '
+            o.append(f'<text x="{gx:.1f}" y="{y1+14}" text-anchor="middle" fill="{THEME["dim"]}" '
                      f'{fm} font-size="9">T{t:02d}</text>')
             last_turn = t
 
@@ -560,9 +590,9 @@ CSS = r"""
   font-weight:400;font-style:normal;font-display:swap;
 }
 :root{
-  --bg:#010609; --bg2:#06121a; --fg:#33e9ff; --dim:#1f8294; --dimmer:#155563;
+  --bg:#010609; --bg2:#06121a; --fg:$fg; --dim:$dim; --dimmer:$dimmer;
   --amber:#ffb000; --cyan:#36ffc2; --red:#ff5151; --pink:#ff5fd2; --lavender:#c0aaff;
-  --line:#0c2a33; --panel:#040d11;
+  --line:$line; --panel:#040d11; --glow:$glow;
   --mono:"Cascadia Mono","Consolas","DejaVu Sans Mono","Courier New",monospace;
 }
 *{box-sizing:border-box}
@@ -588,11 +618,13 @@ a:hover{color:#fff;text-shadow:0 0 6px var(--cyan)}
 header.top{
   position:sticky;top:0;z-index:50;background:linear-gradient(180deg,#02141a,#010609);
   border-bottom:1px solid var(--dim);padding:10px 16px;
-  box-shadow:0 0 18px rgba(51,233,255,.15);
+  box-shadow:0 0 18px rgba(var(--glow),.15);
 }
 .title{font-weight:700;letter-spacing:.18em;color:var(--fg);
-  text-shadow:0 0 8px rgba(51,233,255,.6);font-size:18px}
+  text-shadow:0 0 8px rgba(var(--glow),.6);font-size:18px}
 .title .blink{animation:blink 1.05s steps(1) infinite;color:var(--amber)}
+.title a{color:inherit;text-decoration:none}
+.title a:hover{text-decoration:underline;text-shadow:0 0 12px rgba(var(--glow),.9)}
 @keyframes blink{50%{opacity:0}}
 .subtitle{color:var(--dim);font-size:12px;letter-spacing:.12em;margin-top:2px}
 .statbar{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:12px}
@@ -603,7 +635,7 @@ header.top{
   background:#02161c;border:1px solid var(--dim);color:var(--fg);font-family:var(--mono);
   font-size:13px;padding:6px 10px;width:min(420px,60vw);outline:none;
 }
-#search:focus{border-color:var(--fg);box-shadow:0 0 8px rgba(51,233,255,.4)}
+#search:focus{border-color:var(--fg);box-shadow:0 0 8px rgba(var(--glow),.4)}
 #search::placeholder{color:var(--dimmer)}
 .btn{
   background:#02161c;border:1px solid var(--dim);color:var(--fg);font-family:var(--mono);
@@ -1091,6 +1123,8 @@ def main():
                     help="ideological Y position [-1 Sordish Reformism … +1 Sollism]")
     ap.add_argument("--align-label", metavar="LABEL",
                     help="dot label (default: model name from filename)")
+    ap.add_argument("--banner-url", metavar="URL",
+                    help="make the SHADOW PRESIDENT header banner a link to this URL")
     args = ap.parse_args()
 
     path = resolve_input(args.path)
@@ -1138,6 +1172,10 @@ def main():
         except ValueError:
             pass
 
+    banner_text = "SHADOW&nbsp;PRESIDENT&nbsp;//&nbsp;RUN&nbsp;LOG"
+    if args.banner_url:
+        banner_text = f'<a href="{esc(args.banner_url)}">{banner_text}</a>'
+
     dtype_str = " · ".join(f"{v} {k}" for k, v in sorted(stats["dtypes"].items(), key=lambda x: -x[1]))
     run_meta = json.dumps({"run_id": stats["run_id"]})
 
@@ -1176,11 +1214,11 @@ def main():
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         f"<title>SHADOW PRESIDENT :: RUN {esc(stats['run_id'])}</title>"
-f"<style>{CSS}</style></head><body>"
+f"<style>{Template(CSS).safe_substitute(THEME)}</style></head><body>"
         f"<script>window.RUN_META={run_meta};</script>"
         # header
         "<header class=\"top\">"
-        "<div class=\"title\">SHADOW&nbsp;PRESIDENT&nbsp;//&nbsp;RUN&nbsp;LOG"
+        f"<div class=\"title\">{banner_text}"
         "<span class=\"blink\">_</span></div>"
         f"<div class=\"subtitle\">AUTONOMOUS PLAYTHROUGH ARCHIVE &nbsp;·&nbsp; {esc(dtype_str)}</div>"
         f"<div class=\"statbar\">{statbar}</div>"

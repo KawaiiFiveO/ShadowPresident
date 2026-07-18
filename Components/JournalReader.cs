@@ -19,21 +19,35 @@ public class JournalReader : MonoBehaviour
 {
     public JournalReader(IntPtr ptr) : base(ptr) { }
 
-    private float _nextReadTime = 0f;
+    private static float _nextReadTime = 0f;
     private const float ReadInterval = 30f;
+
+    // Entity data isn't loaded on the main menu / during the load itself. Retry soon rather than
+    // waiting out the full interval, so the ledger is populated before the first decision.
+    private const float RetryInterval = 2f;
+
+    // Immediate synchronous read, for GameState.EnsureRead() before a driver dispatches a decision.
+    // Main thread only — it walks Il2Cpp lists.
+    internal static bool ReadNow()
+    {
+        bool ok = ReadJournal();
+        _nextReadTime = Time.time + (ok ? ReadInterval : RetryInterval);
+        return ok;
+    }
 
     void Update()
     {
-        float now = Time.time;
-        if (now < _nextReadTime) { return; }
-        _nextReadTime = now + ReadInterval;
-        ReadJournal();
+        if (Time.time < _nextReadTime) { return; }
+        bool ok = ReadJournal();
+        _nextReadTime = Time.time + (ok ? ReadInterval : RetryInterval);
     }
 
-    private unsafe void ReadJournal()
+    // Returns true once the journal list exists — an empty journal is a valid read (turn 1),
+    // a missing list is not.
+    private static unsafe bool ReadJournal()
     {
         var entries = EntityDataManager.JournalEntriesData;
-        if (entries == null) { return; }
+        if (entries == null) { return false; }
 
         var facts = new List<(int turn, int index, string text)>();
 
@@ -58,7 +72,7 @@ public class JournalReader : MonoBehaviour
             {
                 AIClient.CurrentJournal = "";
             }
-            return;
+            return true;
         }
 
         // Stable order: by turn (ascending), then by original list index (descending)
@@ -80,6 +94,8 @@ public class JournalReader : MonoBehaviour
         {
             Plugin.Log.LogInfo($"[JournalReader] {facts.Count} entries (updated).");
         }
+
+        return true;
     }
 
     private static unsafe string ReadIl2CppString(nint fieldAddress)

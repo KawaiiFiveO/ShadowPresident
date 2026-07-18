@@ -9,8 +9,13 @@ public class GameStateReader : MonoBehaviour
 {
     public GameStateReader(IntPtr ptr) : base(ptr) { }
 
-    private float _nextReadTime = 0f;
+    private static float _nextReadTime = 0f;
     private const float ReadInterval = 30f;
+
+    // A read that finds nothing — main menu, HUD not built yet, stat lists not populated — must not
+    // consume the full interval. Doing so put the next attempt up to 30s away, which is easily long
+    // enough for the first decision after a load to be sent with an empty stats block.
+    private const float RetryInterval = 2f;
 
     // Set by ScheduleEarlyRead() to force a ReadStats() sooner than the 30s interval.
     private static float _earlyReadAt = 0f;
@@ -22,17 +27,31 @@ public class GameStateReader : MonoBehaviour
         _earlyReadAt = Time.time + delaySeconds;
     }
 
+    // Immediate synchronous read, for GameState.EnsureRead() before a driver dispatches a decision.
+    // Main thread only — it walks Il2Cpp lists.
+    //
+    // Deliberately leaves a pending ScheduleEarlyRead() alone: that read is waiting out a delay for
+    // the game to add the next fragment's reports, so a decision landing inside that window must
+    // not consume it — the reports wouldn't exist yet, and cancelling it would lose them entirely.
+    internal static bool ReadNow()
+    {
+        bool ok = ReadStats();
+        _nextReadTime = Time.time + (ok ? ReadInterval : RetryInterval);
+        return ok;
+    }
+
     void Update()
     {
         float now = Time.time;
         bool forced = _earlyReadAt > 0f && now >= _earlyReadAt;
-        if (forced) { _earlyReadAt = 0f; _nextReadTime = now + ReadInterval; }
+        if (forced) { _earlyReadAt = 0f; }
         else if (now < _nextReadTime) { return; }
-        else { _nextReadTime = now + ReadInterval; }
-        ReadStats();
+        bool ok = ReadStats();
+        _nextReadTime = Time.time + (ok ? ReadInterval : RetryInterval);
     }
 
-    private unsafe void ReadStats()
+    // Returns true when the HUD yielded at least one stat — i.e. the read produced live state.
+    private static unsafe bool ReadStats()
     {
         // Read the LIVE HUD stats straight from HUDPanel's instantiated lists. The old
         // FindObjectsOfType<TemplateHUDStat>(true) approach also swept in the templateHUDStat
@@ -42,7 +61,7 @@ public class GameStateReader : MonoBehaviour
         // (e.g. Government Budget frozen at -9). The instantiated lists are the actual on-screen
         // stats and are re-Setup() as values change.
         var hud = FindHUDPanel();
-        if (hud == null) { return; }
+        if (hud == null) { return false; }
 
         var parts = new List<string>();
         var seen = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
@@ -92,33 +111,34 @@ public class GameStateReader : MonoBehaviour
 
         Plugin.Log.LogInfo($"[GameStateReader] ReadStats: {numCount} num, {textCount} text → {parts.Count} parts");
 
-        if (parts.Count > 0)
+        if (parts.Count == 0) { return false; }
+
+        string result = string.Join(" | ", parts);
+        bool statsChanged = result != AIClient.CurrentStats;
+        if (statsChanged)
         {
-            string result = string.Join(" | ", parts);
-            bool statsChanged = result != AIClient.CurrentStats;
-            if (statsChanged)
-            {
-                AIClient.CurrentStats = result;
-                Plugin.Log.LogInfo($"[GameStateReader] Stats: {result}");
-            }
-
-            string news = ReadArticles(AIClient.CurrentTurn);
-            bool newsChanged = news != AIClient.CurrentNews;
-            if (newsChanged) { AIClient.CurrentNews = news; }
-
-            var gfm = FindObjectOfType<GameFlowManager>();
-            string reports = ReadReports(gfm, AIClient.CurrentTurn);
-            bool reportsChanged = reports != AIClient.CurrentReports;
-            if (reportsChanged) { AIClient.CurrentReports = reports; }
-
-            if (statsChanged || newsChanged || reportsChanged)
-            {
-                string s = AIClient.CurrentStats;
-                string n = AIClient.CurrentNews;
-                string r = AIClient.CurrentReports;
-                Task.Run(() => AIClient.PostStats(s, n, r));
-            }
+            AIClient.CurrentStats = result;
+            Plugin.Log.LogInfo($"[GameStateReader] Stats: {result}");
         }
+
+        string news = ReadArticles(AIClient.CurrentTurn);
+        bool newsChanged = news != AIClient.CurrentNews;
+        if (newsChanged) { AIClient.CurrentNews = news; }
+
+        var gfm = FindObjectOfType<GameFlowManager>();
+        string reports = ReadReports(gfm, AIClient.CurrentTurn);
+        bool reportsChanged = reports != AIClient.CurrentReports;
+        if (reportsChanged) { AIClient.CurrentReports = reports; }
+
+        if (statsChanged || newsChanged || reportsChanged)
+        {
+            string s = AIClient.CurrentStats;
+            string n = AIClient.CurrentNews;
+            string r = AIClient.CurrentReports;
+            Task.Run(() => AIClient.PostStats(s, n, r));
+        }
+
+        return true;
     }
 
     // Returns the active/showing HUDPanel (the live national-map HUD). FindObjectsOfType(true)

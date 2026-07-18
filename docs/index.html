@@ -73,6 +73,30 @@ main{max-width:860px;margin:0 auto;padding:36px 32px 100px}
   border-color:var(--dim);
   box-shadow:0 0 16px rgba(51,233,255,.08);
 }
+/* Featured runs: add class "featured" to a .run-card to mark it significant. */
+.run-card.featured{
+  border-color:var(--amber);
+  background:linear-gradient(90deg,#0f0a00,var(--panel) 55%);
+  box-shadow:0 0 18px rgba(255,176,0,.13);
+}
+.run-card.featured:hover{
+  border-color:var(--amber);
+  box-shadow:0 0 24px rgba(255,176,0,.22);
+}
+.run-badge{
+  align-self:flex-start;margin-bottom:3px;
+  display:inline-flex;align-items:center;gap:6px;
+  border:1px solid var(--amber);background:#120c00;color:var(--amber);
+  font-size:10px;font-weight:700;letter-spacing:.16em;
+  padding:2px 9px;
+  text-shadow:0 0 6px rgba(255,176,0,.5);
+}
+.run-badge::before{content:"\2605"} /* star */
+/* Run name: add a .run-name element to a .run-meta to title the run ("Season 1"). */
+.run-name{
+  color:var(--fg);font-size:14px;font-weight:700;letter-spacing:.1em;
+  text-shadow:0 0 8px rgba(192,170,255,.35);
+}
 .run-meta{display:flex;flex-direction:column;gap:5px}
 .run-date{color:var(--fg);font-size:13px;letter-spacing:.06em}
 .run-date .label{color:var(--dimmer);font-size:11px;letter-spacing:.14em;margin-right:8px}
@@ -117,10 +141,50 @@ footer a:hover{color:var(--dim)}
       date  = YYYY-MM-DD HH:MM:SS parsed from filename run_YYYYMMDD_HHMMSS_model.html
       model = human-readable model label
       href  = relative path from docs/ to the HTML file
+
+      FEATURED: to mark a run as significant/interesting, add the class
+      "featured" to its .run-card AND drop a badge as the first child of
+      .run-meta. The badge text is free-form (e.g. NOTABLE, FEATURED).
+
+      NAME: to title a run, add a .run-name element to .run-meta (free-form
+      text, e.g. "Season 1"). Both are optional and independent:
+        <div class="run-card featured">
+          <div class="run-meta">
+            <span class="run-badge">FEATURED</span>
+            <div class="run-name">Season 1</div>
+            ...
     -->
+
+    <div class="run-card featured">
+      <div class="run-meta">
+        <span class="run-badge">FEATURED</span>
+        <div class="run-name">Season 5 FINALE - "Autocrat"</div>
+        <div class="run-date">
+          <span class="label">DATE</span>2026-07-16 &nbsp;21:48:30
+        </div>
+        <div class="run-model">
+          <span class="label">MODEL</span><span class="value">Qwen3.5 9B MTP</span>
+        </div>
+      </div>
+      <a class="run-link" href="run_logs/run_20260716_214830_qwen3.5-9b-mtp.html">[VIEW LOG &rarr;]</a>
+    </div>
 
     <div class="run-card">
       <div class="run-meta">
+        <div class="run-name">Season X (Special) - "Isolationist"</div>
+        <div class="run-date">
+          <span class="label">DATE</span>2026-07-16 &nbsp;03:19:25
+        </div>
+        <div class="run-model">
+          <span class="label">MODEL</span><span class="value">Gemma 4 26B A4B qat</span>
+        </div>
+      </div>
+      <a class="run-link" href="run_logs/run_20260716_031925_gemma-4-26b-a4b-qat.html">[VIEW LOG &rarr;]</a>
+    </div>
+
+    <div class="run-card">
+      <div class="run-meta">
+        <div class="run-name">Season 4 - "Great Depression"</div>
         <div class="run-date">
           <span class="label">DATE</span>2026-07-15 &nbsp;03:47:47
         </div>
@@ -133,6 +197,7 @@ footer a:hover{color:var(--dim)}
 
     <div class="run-card">
       <div class="run-meta">
+        <div class="run-name">Season 1 REDUX - "Radical Centrist"</div>
         <div class="run-date">
           <span class="label">DATE</span>2026-07-09 &nbsp;02:32:31
         </div>
@@ -145,6 +210,7 @@ footer a:hover{color:var(--dim)}
 
     <div class="run-card">
       <div class="run-meta">
+        <div class="run-name">Season 3.5 - "Unaligned"</div>
         <div class="run-date">
           <span class="label">DATE</span>2026-07-04 &nbsp;18:23:02
         </div>
@@ -157,6 +223,8 @@ footer a:hover{color:var(--dim)}
 
     <div class="run-card">
       <div class="run-meta">
+        <span class="run-badge">MILDLY INTERESTING</span>
+        <div class="run-name">Season 3 - "Capitalist"</div>
         <div class="run-date">
           <span class="label">DATE</span>2026-06-30 &nbsp;06:55:32
         </div>
@@ -169,6 +237,7 @@ footer a:hover{color:var(--dim)}
 
     <div class="run-card">
       <div class="run-meta">
+        <div class="run-name">Season 2 - "Paranoid"</div>
         <div class="run-date">
           <span class="label">DATE</span>2026-06-29 &nbsp;03:00:22
         </div>
@@ -179,8 +248,10 @@ footer a:hover{color:var(--dim)}
       <a class="run-link" href="run_logs/run_20260629_030022_deepseek-r1-distill-qwen-14b.html">[VIEW LOG &rarr;]</a>
     </div>
 
-    <div class="run-card">
+    <div class="run-card featured">
       <div class="run-meta">
+        <span class="run-badge">NOTABLE</span>
+        <div class="run-name">Season 1 (Pilot) - "Commie"</div>
         <div class="run-date">
           <span class="label">DATE</span>2026-06-25 &nbsp;14:46:31
         </div>
